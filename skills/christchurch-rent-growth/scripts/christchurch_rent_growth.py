@@ -374,8 +374,9 @@ def main():
                                                             period["pooled_geometric_mean"]))
     print("Overall 12-month change: %+.4f%%" % result["overall_change_pct"])
     if proposed is not None:
-        print("Proposed rent: %s -> %s per week (%+.1f%%)"
-              % (dollars(args.current_rent), dollars(proposed), result["overall_change_pct"]))
+        unrounded = args.current_rent * (1 + result["overall_change_pct"] / 100)
+        print("Proposed rent: %s -> %s per week (%+.1f%% gives $%.2f, rounded to the nearest $5)"
+              % (dollars(args.current_rent), dollars(proposed), result["overall_change_pct"], unrounded))
     for path in (pdf, png, csv_out, json_out):
         print(path)
 

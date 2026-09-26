@@ -21,7 +21,7 @@ This skill folder ships everything the run needs; resolve these paths relative t
    `"<python>" "<skill-dir>/scripts/christchurch_rent_growth.py" --project-dir "<project>" --current-rent <weekly rent>`
    Done when it prints the release, results, `Proposed rent` line, and four output paths. On any failure line, stop and report it; never build the chart or numbers another way.
 5. **Inspect** the PNG against the [chart contract](#chart-contract): no clipped text, no point label touching the line, another label, or the legend, and a legible footer. Fix layout problems in the script, then re-run and re-inspect.
-6. **Report** the release, data end month, the 12 monthly values, both periods' lodged bonds and pooled geometric means, the overall change, and the actual output paths (attach the files if the host supports it). End with the [landlord message](#landlord-message).
+6. **Report** the release, data end month, both periods' lodged bonds and pooled geometric means, the overall change, and the actual output paths (attach the files if the host supports it). The monthly values are on the chart; do not repeat them in a table. End with the [landlord message](#landlord-message).
 
 ### When Python cannot download
 
@@ -29,7 +29,7 @@ If the script prints `DOWNLOAD FAILED` (blocked network, missing CA certificates
 
 ## Landlord message
 
-Introduce it as an example message for the landlord that may need adjusting, then give the filled template as plain text inside a `text` code block, so copying it picks up no quote markers or other formatting:
+Tell the user the proposed rent is rounded to the nearest $5, quoting the unrounded figure from the `Proposed rent` line; the landlord message itself does not mention rounding. Introduce it as an example message for the landlord that may need adjusting, then give the filled template as plain text inside a `text` code block, so copying it picks up no quote markers or other formatting:
 
 ```text
 We've carried out a rent review for [property address], based on MBIE bond lodgement data for Christchurch over the past 12 months. We'd recommend increasing the rent from $[current rent] to $[proposed rent] per week.
