@@ -1,26 +1,81 @@
 """Bedroom-specific suburb versus Christchurch rent review from direct annual API aggregates."""
 import argparse
 import csv
+import hashlib
+import importlib.util
 import json
 import math
 import os
 import re
 import sqlite3
+import sys
 import unicodedata
+import urllib.request
 from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 
-import christchurch_rent_growth as growth
-import matplotlib.pyplot as plt
-from matplotlib.ticker import StrMethodFormatter
+if sys.version_info < (3, 10):
+    sys.exit("Python 3.10 or newer is required.")
 
 SKILL = Path(__file__).resolve().parent.parent
 BASE = "https://api.business.govt.nz/gateway/tenancy-services/market-rent/v2/"
+CREDENTIALS = SKILL / "api_credentials.json"
+MONTHS = ("January", "February", "March", "April", "May", "June",
+          "July", "August", "September", "October", "November", "December")
+
+
+def fail(msg: str) -> None:
+    sys.exit("VALIDATION FAILED: " + msg)
+
+
+def shift(d: date, n: int) -> date:
+    y, m = divmod(d.year * 12 + d.month - 1 + n, 12)
+    return date(y, m + 1, 1)
+
+
+def month_label(d: date) -> str:
+    return f"{MONTHS[d.month - 1]} {d.year}"
+
+
+def iso(d: date) -> str:
+    return "%04d-%02d" % (d.year, d.month)
+
+
+def api_get(base: str, path: str, key: str, source: Path, evidence: list, **params) -> dict:
+    url = base + path + ("?" + urlencode(params) if params else "")
+    request = urllib.request.Request(url, headers={"Ocp-Apim-Subscription-Key": key,
+                                                  "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=130) as response:
+            raw = response.read()
+    except OSError as exc:
+        fail("Market Rent API request failed: " + str(exc))
+    saved = source / ("%03d.json" % (len(evidence) + 1))
+    saved.write_bytes(raw)
+    evidence.append({"url": url, "response_file": str(saved),
+                     "sha256": hashlib.sha256(raw).hexdigest()})
+    try:
+        payload = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        fail("Market Rent API returned invalid JSON")
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        fail("Market Rent API response must contain an items list")
+    return payload
+
+def percent_change(value: float, baseline: float) -> float:
+    return (value / baseline - 1) * 100
 
 
 def render(summary: dict, out: Path) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import StrMethodFormatter
+
     plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 11, "text.parse_math": False})
     paper, ink, muted = "#fcfbf8", "#263b3b", "#697773"
     fig = plt.figure(figsize=(12, 16), facecolor=paper)
@@ -43,7 +98,7 @@ def render(summary: dict, out: Path) -> Path:
     for market, color, left in zip(summary["markets"], colors, [.075, .52]):
         points = market["points"]
         values = [p["geometric_mean"] for p in points]
-        rates = [(v / values[0] - 1) * 100 for v in values]
+        rates = [percent_change(v, values[0]) for v in values[:-1]] + [market["geometric_change_pct"]]
         fig.text(left, .865, market["label"], fontsize=12, color=color, weight="bold")
         fig.text(left, .838, f"${values[-1]:.2f}/week", fontsize=21, color=ink, weight="bold")
         fig.text(left, .817, f"{rates[-1]:+.1f}% change from {summary['start_label']}", fontsize=10.5, color=muted)
@@ -53,8 +108,9 @@ def render(summary: dict, out: Path) -> Path:
                         color=color, weight="bold", va="center", annotation_clip=False)
         for field, label, precision in [("geometric_mean", "geometric mean", 2), ("median", "median", 0)]:
             first, last = points[0][field], points[-1][field]
+            change = rates[-1] if field == "geometric_mean" else percent_change(last, first)
             table_rows.append([f"{market['label']} | {label}", f"${first:.{precision}f}",
-                               f"${last:.{precision}f}", f"{(last / first - 1) * 100:+.1f}%"])
+                               f"${last:.{precision}f}", f"{change:+.1f}%"])
     levels.set_ylabel("Geometric mean weekly rent", color=muted, labelpad=12)
     levels.yaxis.set_major_formatter(StrMethodFormatter("${x:,.0f}"))
     levels.tick_params(axis="x", labelbottom=False, length=0)
@@ -100,7 +156,7 @@ def render(summary: dict, out: Path) -> Path:
             ax.text(x, n + max(before, after) * .04, f"{n:,}", ha="center", fontsize=10, color=ink)
         ax.set_ylim(0, max(before, after) * 1.38)
         ax.set_xticks([0, 1], [summary["baseline_header"], summary["latest_header"]])
-        ax.set_title(f"{market['label']}  {(after / before - 1) * 100:+.1f}%", fontsize=10.5, color=color, loc="left", pad=9)
+        ax.set_title(f"{market['label']}  {percent_change(after, before):+.1f}%", fontsize=10.5, color=color, loc="left", pad=9)
         ax.yaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
     for ax in [levels, changes] + bond_axes:
         ax.set_facecolor(paper)
@@ -131,38 +187,38 @@ class IncompleteAreaBreakdown(ValueError):
 
 
 def annual_row(payload: dict, definition: str, labels: list, end: date, dwelling: str, bedrooms: str) -> dict:
-    start, last = growth.shift(end, -11), growth.shift(end, 1) - timedelta(days=1)
+    start, last = shift(end, -11), shift(end, 1) - timedelta(days=1)
     try:
         covered = [date(*map(int, v.split("-"))) for v in payload["periodCovered"].split("/")]
     except (KeyError, TypeError, ValueError, AttributeError):
-        growth.fail("invalid API period coverage")
+        fail("invalid API period coverage")
     if covered != [start, last] or payload.get("areaDefinition") != definition:
-        growth.fail("API period or geography does not match request")
+        fail("API period or geography does not match request")
     items = payload["items"]
     if not all(isinstance(r, dict) for r in items):
-        growth.fail("API items must be objects")
+        fail("API items must be objects")
     returned = {r.get("area") for r in items} - {"ALL"}
     expected = set(labels)
     if definition == "SAU2019" and len(expected) > 1 and returned < expected:
         raise IncompleteAreaBreakdown()
     if returned != expected:
-        growth.fail("API returned missing or unexpected named areas")
+        fail("API returned missing or unexpected named areas")
     area = "ALL" if len(labels) > 1 else labels[0]
     rows = [r for r in items if r.get("area") == area and r.get("dwell") == dwelling and r.get("nBedrms") == bedrooms]
     if len(rows) != 1:
-        growth.fail("expected exactly one unsuppressed aggregate with the requested dwelling and bedroom selection")
+        fail("expected exactly one unsuppressed aggregate with the requested dwelling and bedroom selection")
     row = rows[0]
     if type(row.get("nLodged")) is not int or row["nLodged"] <= 0:
-        growth.fail("missing or suppressed bond count")
+        fail("missing or suppressed bond count")
     if any(type(row.get(k)) not in (int, float) or not math.isfinite(row[k]) for k in ["lmean", "med"]):
-        growth.fail("missing or invalid annual log mean or median")
+        fail("missing or invalid annual log mean or median")
     try:
         geometric = math.exp(row["lmean"])
     except OverflowError:
-        growth.fail("invalid geometric mean")
+        fail("invalid geometric mean")
     if geometric <= 0 or row["med"] <= 0:
-        growth.fail("rent statistics must be positive")
-    return {"window_start": growth.iso(start), "window_end": growth.iso(end), "lmean": row["lmean"],
+        fail("rent statistics must be positive")
+    return {"window_start": iso(start), "window_end": iso(end), "lmean": row["lmean"],
             "geometric_mean": geometric, "median": row["med"], "lodged_bonds": row["nLodged"]}
 
 
@@ -172,13 +228,13 @@ def named_group_statistics(params: dict, name: str, key: str, source: Path, evid
     codes = params["area-codes"]
     query["user-defined-area-mappings"] = f"{name} ({codes})"
     try:
-        return growth.api_get(BASE, "statistics", key, source, evidence, **query)
+        return api_get(BASE, "statistics", key, source, evidence, **query)
     except SystemExit as exc:
         error = exc.__context__
         if not isinstance(error, HTTPError) or error.code != 500:
             raise
     query["user-defined-area-mappings"] = f"{name}({codes})"
-    return growth.api_get(BASE, "statistics", key, source, evidence, **query)
+    return api_get(BASE, "statistics", key, source, evidence, **query)
 
 
 def lookup_key(value: str) -> str:
@@ -192,14 +248,14 @@ def local_market(suburb: str, address: str, area_codes: str | None, include_adjo
         areas = {code: (name, neighbours.split(",") if neighbours else [], in_city)
                  for code, name, neighbours, in_city in
                  db.execute("SELECT code, name, adjoining_codes, in_christchurch_city FROM areas ORDER BY code")}
-        address_matches = set()
-        prefix = lookup_key(address)
+        address_rows = set()
+        prefix = lookup_key(address.split(",", 1)[0])
         if prefix:
             alternate = re.sub(r"\bsaint\b", "st", prefix.replace("’", "").replace("'", ""))
             for variant in {prefix, alternate}:
                 lower = variant + ","
-                address_matches.update(row[0] for row in db.execute(
-                    "SELECT full_address FROM address_lookup WHERE lookup_key = ? "
+                address_rows.update(db.execute(
+                    "SELECT full_address, suburb FROM address_lookup WHERE lookup_key = ? "
                     "OR (lookup_key >= ? AND lookup_key < ?)", (variant, lower, variant + "-")))
 
     suburb_key = lookup_key(suburb).removesuffix(" (christchurch city)")
@@ -237,10 +293,14 @@ def local_market(suburb: str, address: str, area_codes: str | None, include_adjo
         label += " North + South"
     if set(codes) - set(base):
         label += " + adjoining areas"
+    address_suburbs = sorted({name for _, name in address_rows if name})
     return {"label": label, "base_areas": base_areas, "area_codes": ",".join(codes),
             "area_labels": [areas[code][0] for code in codes],
             "outside_christchurch_city": [areas[code][0] for code in codes if not areas[code][2]],
-            "address_matches": sorted(address_matches)}
+            "address_matches": sorted(name for name, _ in address_rows),
+            "address_suburbs": address_suburbs,
+            "address_suburb_mismatch": bool(address_suburbs) and
+            all(lookup_key(name) != suburb_key for name in address_suburbs)}
 
 
 def main(argv=None) -> Path | None:
@@ -259,7 +319,7 @@ def main(argv=None) -> Path | None:
     except (ValueError, sqlite3.Error) as exc:
         parser.error(str(exc))
     if args.lookup:
-        print(json.dumps(local, ensure_ascii=False, indent=2))
+        print(json.dumps(local, indent=2))
         return None
     missing = [f"--{flag}" for flag in report_flags if not getattr(args, flag.replace("-", "_"))]
     if missing:
@@ -271,43 +331,52 @@ def main(argv=None) -> Path | None:
         end = date.fromisoformat(args.end_month + "-01")
     except ValueError:
         parser.error("dates must use YYYY-MM")
-    if start >= end or end > growth.shift(date.today().replace(day=1), -2):
+    if start >= end or end > shift(date.today(), -2):
         parser.error("baseline must precede end; end must be at least two calendar months behind the current month")
 
+    if importlib.util.find_spec("matplotlib") is None:
+        fail("install Matplotlib to generate the rental comparison PDF")
+    if local["address_suburb_mismatch"]:
+        print("Address index lists this street address in " + ", ".join(local["address_suburbs"])
+              + f". The selected comparison uses {args.suburb}.", file=sys.stderr)
     key = os.environ.get("MBIE_MARKET_RENT_API_KEY")
     if not key:
         try:
-            key = json.loads(growth.CREDENTIALS.read_text(encoding="utf-8"))["production"]["primary_key"]
+            key = json.loads(CREDENTIALS.read_text(encoding="utf-8"))["production"]["primary_key"]
         except (OSError, ValueError, KeyError, TypeError):
-            growth.fail("configure api_credentials.json or MBIE_MARKET_RENT_API_KEY")
+            fail("configure api_credentials.json or MBIE_MARKET_RENT_API_KEY")
     if not isinstance(key, str) or not key.strip():
-        growth.fail("Market Rent API key is empty or invalid")
+        fail("Market Rent API key is empty or invalid")
     slug = re.sub(r"[^A-Za-z0-9]+", "_", args.address).strip("_")
-    out = Path(args.project_dir).resolve() / "outputs" / f"{slug}_{args.dwelling_type}_{args.bedrooms}_{args.start_month}_to_{args.end_month}"
+    local_label, codes, labels = local["label"], local["area_codes"], local["area_labels"]
+    scope = ",".join(sorted(codes.split(",")))
+    suffix = hashlib.sha256(scope.encode("ascii")).hexdigest()[:12]
+    report_name = f"{slug}_{args.dwelling_type}_{args.bedrooms}_{args.start_month}_to_{args.end_month}"
+    out = Path(args.project_dir).resolve() / "outputs" / f"{report_name}_sa2-{suffix}"
     if (out / "rent_review.pdf").exists():
-        growth.fail("report already exists; choose a fresh project directory to preserve its source evidence")
+        fail("report already exists; choose a fresh project directory to preserve its source evidence")
     source = out / "source"
     source.mkdir(parents=True, exist_ok=True)
     evidence = []
-    local_label, codes, labels = local["label"], local["area_codes"], local["area_labels"]
     markets = []
     count = (end.year - start.year) * 12 + end.month - start.month + 1
     for label, definition, market_codes, market_labels in [(local_label, "SAU2019", codes, labels),
                                                            ("Christchurch City", "TA2019", "060", ["Christchurch City"])]:
         points = []
         use_named_group = False
-        named_group = label.replace(" + ", " and ")
+        named_group = re.sub(r" \(Christchurch City\)", "", label, flags=re.IGNORECASE)
+        named_group = re.sub(r"[(),]", "", named_group).replace(" + ", " and ")
         for offset in range(count):
-            month = growth.shift(start, offset)
+            month = shift(start, offset)
             params = {
-                "period-ending": growth.iso(month), "num-months": 12, "area-definition": definition,
+                "period-ending": iso(month), "num-months": 12, "area-definition": definition,
                 "area-codes": market_codes, "include-aggregates": "true"}
             if args.dwelling_type != "ALL":
                 params["dwelling-type"] = args.dwelling_type
             if args.bedrooms != "ALL":
                 params["num-bedrooms"] = args.bedrooms
             if not use_named_group:
-                payload = growth.api_get(BASE, "statistics", key, source, evidence, **params)
+                payload = api_get(BASE, "statistics", key, source, evidence, **params)
                 try:
                     point = annual_row(payload, definition, market_labels, month, args.dwelling_type, args.bedrooms)
                 except IncompleteAreaBreakdown:
@@ -319,15 +388,15 @@ def main(argv=None) -> Path | None:
             points.append(point)
             print(label, point["window_end"], f"${point['geometric_mean']:.2f}", flush=True)
         markets.append({"label": label, "definition": definition, "codes": market_codes, "points": points,
-                        "geometric_change_pct": (points[-1]["geometric_mean"] / points[0]["geometric_mean"] - 1) * 100})
+                        "geometric_change_pct": percent_change(points[-1]["geometric_mean"], points[0]["geometric_mean"])})
     bedroom_label = "All bedrooms" if args.bedrooms == "ALL" else args.bedrooms + "-bedroom"
     type_label = "all dwelling types" if args.dwelling_type == "ALL" else args.dwelling_type
     now = datetime.now().astimezone()
     summary = {"address": args.address, "suburb": args.suburb, "bedrooms": args.bedrooms, "dwelling_type": args.dwelling_type,
-               "area_labels": labels, "local_selection": local, "start_label": growth.label(start), "end_label": growth.label(end),
+               "area_labels": labels, "local_selection": local, "start_label": month_label(start), "end_label": month_label(end),
                "baseline_header": "Year to " + start.strftime("%b %Y"), "latest_header": "Year to " + end.strftime("%b %Y"),
                "scope_label": f"{bedroom_label} | {type_label} | {local_label} vs Christchurch City",
-               "window_note": f"Equal 12-month windows: {growth.shift(start, -11):%b %Y}-{start:%b %Y} vs {growth.shift(end, -11):%b %Y}-{end:%b %Y}.",
+               "window_note": f"Equal 12-month windows: {shift(start, -11):%b %Y}-{start:%b %Y} vs {shift(end, -11):%b %Y}-{end:%b %Y}.",
                "geography_note": f"Local: SA2 2019 {codes}. Christchurch City: TA 2019 060. Provisional bond data.",
                "retrieved_at": now.isoformat(), "retrieved_date": now.strftime("%d %B %Y"),
                "method": "Direct annual exp(lmean) and med; relative geometric change from selected baseline. Randomly rounded nLodged.",
@@ -344,4 +413,6 @@ def main(argv=None) -> Path | None:
 
 
 if __name__ == "__main__":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
     main()

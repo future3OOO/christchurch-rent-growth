@@ -1,6 +1,8 @@
 import io
 import json
 import math
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -13,9 +15,20 @@ import rent_review
 
 
 class RentReviewTests(unittest.TestCase):
+    BURWOOD_CODES = "325600,326200,324000,321300,324600"
+    group_codes = BURWOOD_CODES
+    group_labels = ["Burwood", "Otakaro-Avon River Corridor", "Travis Wetlands", "Prestons", "Shirley East"]
+    group_name = "Burwood and adjoining areas"
+
+    def test_offline_lookup_runs_without_matplotlib(self):
+        result = subprocess.run([sys.executable, "-E", "-S", rent_review.__file__, "--lookup",
+                                 "--suburb", "Burwood"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(json.loads(result.stdout)["area_codes"], "325600")
+
     def test_lookup_uses_named_burwood_even_when_address_point_is_in_travis_wetlands(self):
         stdout = io.StringIO()
-        with redirect_stdout(stdout), patch.object(rent_review.growth.urllib.request, "urlopen") as network:
+        with redirect_stdout(stdout), patch("urllib.request.urlopen") as network:
             rent_review.main(["--lookup", "--suburb", "Burwood", "--address",
                               "280 Beach Road, Burwood", "--include-adjoining"])
         network.assert_not_called()
@@ -23,6 +36,15 @@ class RentReviewTests(unittest.TestCase):
         self.assertEqual(result["base_areas"], ["Burwood"])
         self.assertEqual(result["area_codes"], "325600,326200,324000,321300,324600")
         self.assertEqual(result["address_matches"], ["280 Beach Road, Burwood, Christchurch"])
+
+    def test_lookup_flags_postal_suburb_discrepancy_without_reselecting_market(self):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rent_review.main(["--lookup", "--suburb", "Edgeware", "--address", "280 Beach Road, Edgeware"])
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result["area_codes"], "325300")
+        self.assertEqual(result["address_suburbs"], ["Burwood"])
+        self.assertTrue(result["address_suburb_mismatch"])
 
     def response(self, request, timeout):
         url = request.full_url
@@ -35,25 +57,26 @@ class RentReviewTests(unittest.TestCase):
         definition = query["area-definition"][0]
         latest = end == "2025-02"
         if definition == "user-defined":
-            named = "Mairehau North and South"
-            spaced = f"{named} (321700,323100)"
+            named = self.group_name
+            spaced = f"{named} ({self.group_codes})"
             mapping, = query["user-defined-area-mappings"]
-            self.assertEqual(self.failure, "missing-area")
-            self.assertIn(mapping, (spaced, f"{named}(321700,323100)"))
-            if latest and mapping == spaced:
+            self.assertIn(self.failure, ("missing-area", "named-unavailable", "invalid-named"))
+            self.assertIn(mapping, (spaced, f"{named}({self.group_codes})"))
+            if self.failure == "named-unavailable" or latest and mapping == spaced:
                 raise HTTPError(url, 500, "Internal Server Error", None, None)
             label = named
         else:
             local = definition == "SAU2019"
-            self.assertEqual(query["area-codes"], ["321700,323100"] if local else ["060"])
-            label = "ALL" if local else "Christchurch City"
+            codes, = query["area-codes"]
+            self.assertIn(codes, ("325600", self.group_codes) if local else ("060",))
+            label = "Burwood" if codes == "325600" else "ALL" if local else "Christchurch City"
         row = {"area": label, "dwell": "House", "nBedrms": "3",
                "lmean": math.log(660 if latest else 600), "med": 650 if latest else 620,
                "mean": 999, "nLodged": 57 if latest else 69}
         items = [row]
-        if definition == "SAU2019":
-            names = ["Mairehau North", "Mairehau South"]
-            if self.failure == "missing-area":
+        if definition == "SAU2019" and codes == self.group_codes:
+            names = self.group_labels.copy()
+            if self.failure in ("missing-area", "named-unavailable", "invalid-named"):
                 names.pop()
                 items[0] = {**row, "med": 100}
             items += [{**row, "area": name} for name in names]
@@ -64,19 +87,21 @@ class RentReviewTests(unittest.TestCase):
             payload["items"] = [{**r, "nBedrms": "2"} for r in items]
         elif self.failure == "wrong-period":
             payload["periodCovered"] = "2020-1-1/2020-12-31"
+        elif self.failure == "invalid-named" and definition == "user-defined":
+            payload["items"][0]["area"] = "Unrequested geography"
         return io.BytesIO(json.dumps(payload).encode())
 
-    def run_report(self, project):
-        args = ["--project-dir", project, "--address", "90 Aylesford Street", "--suburb", "Mairehau",
+    def run_report(self, project, *options):
+        args = ["--project-dir", project, "--address", "280 Beach Road", "--suburb", "Burwood",
                 "--bedrooms", "3", "--dwelling-type", "House",
-                "--start-month", "2025-01", "--end-month", "2025-02"]
+                "--start-month", "2025-01", "--end-month", "2025-02", *options]
         with patch.dict(rent_review.os.environ, {"MBIE_MARKET_RENT_API_KEY": "test-key"}), \
-             patch.object(rent_review.growth.urllib.request, "urlopen", self.response):
+             patch("urllib.request.urlopen", self.response):
             return rent_review.main(args)
 
-    def report_summary(self):
+    def report_summary(self, *options):
         with tempfile.TemporaryDirectory() as project:
-            output = self.run_report(project)
+            output = self.run_report(project, *options)
             self.assertTrue((output / "rent_review.pdf").is_file())
             self.assertTrue((output / "rent_review.png").is_file())
             return json.loads((output / "summary.json").read_text())
@@ -92,20 +117,42 @@ class RentReviewTests(unittest.TestCase):
 
     def test_missing_individual_area_uses_a_direct_named_aggregate_for_the_same_codes(self):
         self.failure = "missing-area"
-        summary = self.report_summary()
+        summary = self.report_summary("--include-adjoining", "--suburb", "Burwood (Christchurch City)")
         local, city = summary["markets"]
-        self.assertEqual(local["codes"], "321700,323100")
+        self.assertEqual(local["codes"], self.BURWOOD_CODES)
         self.assertEqual([point["median"] for point in local["points"]], [620, 650])
         self.assertTrue(all("user-defined-area-mappings" in p["request"]["url"] for p in local["points"]))
         self.assertTrue(all("area-definition=TA2019" in p["request"]["url"] for p in city["points"]))
         self.assertEqual(len(summary["requests"]), 5)
 
-    def test_wrong_scope_or_period_cannot_produce_a_report(self):
-        for failure in ["wrong-bedroom", "wrong-period"]:
+    def test_split_suburb_suffix_does_not_enter_the_named_mapping(self):
+        self.failure = "missing-area"
+        self.group_codes = "321700,323100"
+        self.group_labels = ["Mairehau North", "Mairehau South"]
+        self.group_name = "Mairehau North and South"
+        report = self.report_summary("--suburb", "Mairehau (Christchurch City)", "--address", "90 Aylesford Street")
+        self.assertEqual(report["markets"][0]["codes"], self.group_codes)
+        self.assertEqual(report["markets"][0]["points"][-1]["median"], 650)
+
+    def test_both_scopes_can_run_in_the_same_project(self):
+        self.failure = None
+        with tempfile.TemporaryDirectory() as project:
+            local = self.run_report(project)
+            adjoining = self.run_report(project, "--include-adjoining")
+            self.assertNotEqual(local, adjoining)
+            for folder, codes in ((local, "325600"), (adjoining, self.BURWOOD_CODES)):
+                self.assertTrue((folder / "rent_review.pdf").is_file())
+                summary = json.loads((folder / "summary.json").read_text())
+                self.assertEqual(summary["markets"][0]["codes"], codes)
+            with self.assertRaisesRegex(SystemExit, "report already exists"):
+                self.run_report(project)
+
+    def test_invalid_or_unavailable_aggregate_cannot_produce_a_report(self):
+        for failure in ("wrong-bedroom", "wrong-period", "named-unavailable", "invalid-named"):
             self.failure = failure
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as project:
                 with self.assertRaisesRegex(SystemExit, "VALIDATION FAILED"):
-                    self.run_report(project)
+                    self.run_report(project, "--include-adjoining")
                 self.assertEqual(list(Path(project).rglob("*.pdf")), [])
 
 
