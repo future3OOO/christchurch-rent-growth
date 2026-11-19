@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""Christchurch City rent growth from the latest MBIE / Tenancy Services monthly
-territorial-authority rental bond CSV. Contract: ../SKILL.md."""
+"""District rent growth from the MBIE Market Rent API. Contract: ../SKILL.md."""
 
 import argparse
 import csv
 import hashlib
-import html
+import os
 import json
 import math
 import re
 import sys
 import urllib.request
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode
 
 if sys.version_info < (3, 8):
     sys.exit("Python 3.8 or newer is required; found " + sys.version.split()[0])
@@ -26,7 +25,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(errors="replace")
 import matplotlib.pyplot as plt  # noqa: E402
 
-PAGE_URL = "https://www.tenancy.govt.nz/about-tenancy-services/data-and-statistics/rental-bond-data/"
+API_PATH = "https://api.business.govt.nz/{environment}/tenancy-services/market-rent/v2/"
+CREDENTIALS = Path(__file__).resolve().parent.parent / "api_credentials.json"
 LOCATION = "Christchurch City"
 # The two file layouts MBIE has published; anything else fails rather than being guessed at.
 FORMATS = (
@@ -38,16 +38,11 @@ FORMATS = (
 NUMBER = r"\d{1,3}(,\d{3})*(\.\d+)?|\d+(\.\d+)?"
 MONTHS = ("January", "February", "March", "April", "May", "June", "July",
           "August", "September", "October", "November", "December")
-MONTH_RE = "(" + "|".join(MONTHS) + r") (\d{4})"
 REFERENCES = Path(__file__).resolve().parent.parent / "references"
 
 
 def fail(msg):
     sys.exit("VALIDATION FAILED: " + msg)
-
-
-def month(name, year):
-    return date(int(year), MONTHS.index(name) + 1, 1)
 
 
 def shift(d, n):
@@ -63,57 +58,57 @@ def iso(d):
     return "%04d-%02d" % (d.year, d.month)
 
 
-def text_of(fragment):
-    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", fragment)).split())
-
-
-def fetch(url):
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (christchurch-rent-growth)"})
+def api_get(base: str, path: str, key: str, source: Path, evidence: list, **params) -> dict:
+    url = base + path + ("?" + urlencode(params) if params else "")
+    request = urllib.request.Request(url, headers={"Ocp-Apim-Subscription-Key": key,
+                                                  "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return response.read()
+        with urllib.request.urlopen(request, timeout=130) as response:
+            raw = response.read()
     except OSError as exc:
-        sys.exit("DOWNLOAD FAILED: %s: %s\nSave the official page and CSV with another tool and "
-                 "pass --page-html and --csv (SKILL.md, 'When Python cannot download')." % (url, exc))
+        fail("Market Rent API request failed: " + str(exc))
+    saved = source / ("%03d.json" % (len(evidence) + 1))
+    saved.write_bytes(raw)
+    evidence.append({"url": url, "response_file": str(saved),
+                     "sha256": hashlib.sha256(raw).hexdigest()})
+    try:
+        payload = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        fail("Market Rent API returned invalid JSON")
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        fail("Market Rent API response must contain an items list")
+    return payload
 
 
-def read_page(page_html):
-    """Freshness evidence from the official page; every value changes with each release."""
-    headings = []
-    for h2 in re.finditer(r"<h2[^>]*>(.*?)</h2>", page_html, re.S):
-        found = re.fullmatch("Rental bond data, %s to %s" % (MONTH_RE, MONTH_RE), text_of(h2.group(1)))
-        if found:
-            headings.append((h2, found))
-    if len(headings) != 1:
-        fail("expected one 'Rental bond data, <month> to <month>' heading, found %d" % len(headings))
-    h2, found = headings[0]
-    end = month(found.group(3), found.group(4))
-
-    para = re.search(r"<p[^>]*>(.*?)</p>", page_html[h2.end():], re.S)
-    updated = para and re.fullmatch(r"Last updated:? (\d{1,2}) " + MONTH_RE, text_of(para.group(1)))
-    if not updated:
-        fail("no 'Last updated <day> <month> <year>' line directly under the rental bond data heading")
-
-    links = [(urljoin(PAGE_URL, html.unescape(href)), text_of(body))
-             for href, body in re.findall(r'<a\s[^>]*?href="([^"]+)"[^>]*>(.*?)</a>', page_html, re.S)]
-    ta_links = [(url, text) for url, text in links if text.startswith("By territorial authority")]
-    if len(ta_links) != 1:
-        fail("expected one 'By territorial authority' link, found %d" % len(ta_links))
-    csv_url, link_text = ta_links[0]
-    if not urlparse(csv_url).path.lower().endswith(".csv"):
-        fail("'By territorial authority' link is not a CSV: " + csv_url)
-    span = re.search("%s to %s" % (MONTH_RE, MONTH_RE), link_text)
-    if not span or month(span.group(3), span.group(4)) != end:
-        fail("link text %r does not end at the advertised %s" % (link_text, label(end)))
-
-    notice = re.search(r"Important:\s*</span>\s*<div[^>]*>(.*?)</div>", page_html, re.S)
-    warning = text_of(notice.group(1)) if notice else None
-    if warning is None and "provisional" in text_of(page_html).lower():
-        fail("page mentions provisional data but its 'Important:' notice could not be extracted")
-
-    return {"end": end, "last_updated": "%s %s %s" % updated.groups(),
-            "release": "%s %s" % (updated.group(2), updated.group(3)),
-            "csv_url": csv_url, "link_text": link_text, "warning": warning}
+def api_period(payload: dict, location: str, end: date, months: int) -> dict:
+    start = shift(end, 1 - months)
+    last = shift(end, 1) - timedelta(days=1)
+    try:
+        covered = [date(*map(int, value.split("-"))) for value in payload["periodCovered"].split("/")]
+    except (KeyError, TypeError, ValueError, AttributeError):
+        fail("API response has invalid periodCovered")
+    if covered != [start, last] or payload.get("areaDefinition") != "TA2019":
+        fail("API response period or area definition does not match the request")
+    if not all(isinstance(row, dict) for row in payload["items"]):
+        fail("API statistics items must be objects")
+    selected = [row for row in payload["items"] if row.get("area") == location
+                and row.get("dwell") == "ALL" and row.get("nBedrms") == "ALL"]
+    if len(selected) != 1:
+        fail("expected one unsuppressed aggregate for %s, %s (%d months); found %d"
+             % (location, iso(end), months, len(selected)))
+    row = selected[0]
+    n, logmean = row.get("nLodged"), row.get("lmean")
+    if type(n) is not int or n <= 0 or type(logmean) not in (int, float) or not math.isfinite(logmean):
+        fail("API aggregate has missing, suppressed or invalid nLodged/lmean")
+    try:
+        mean = math.exp(logmean)
+    except OverflowError:
+        fail("API lmean overflows the geometric mean")
+    if not math.isfinite(mean) or mean <= 0:
+        fail("API geometric mean must be finite and positive")
+    return {"start": iso(start), "end": iso(end),
+            "label": label(start) + " to " + label(end), "lodged_bonds": n,
+            "pooled_geometric_mean": mean, "lmean": logmean}
 
 
 def load(path):
@@ -225,20 +220,22 @@ def place_label(values, i, dashed_above):
     return (dx, dy), ha
 
 
-def chart(result, release, png, pdf):
+def chart(result, release, png, pdf, location=LOCATION):
     months = [m[0] for m in result["monthly"]]
     yoy = [m[3] for m in result["monthly"]]
     overall = result["overall_change_pct"]
-    fig, ax = plt.subplots(figsize=(12, 9), facecolor="white")
+    span = len(months)
+    comparison = "two-year" if span == 24 else "12-month"
+    fig, ax = plt.subplots(figsize=(16, 12) if span == 24 else (12, 9), facecolor="white")
     fig.subplots_adjust(left=0.09, right=0.95, top=0.84, bottom=0.14)
     x = list(range(len(months)))
     ax.plot(x, yoy, color="#1f77b4", marker="o", linewidth=2.2, markersize=7,
             label="Monthly year-on-year change", zorder=3)
     dashed = ax.axhline(overall, color="#ff7f0e", linestyle="--", linewidth=2,
-                        label="Overall 12-month change: %+.1f%%" % overall, zorder=2)
+                        label="Overall %s change: %+.1f%%" % (comparison, overall), zorder=2)
     ax.axhline(0, color="grey", linewidth=1, zorder=1)
     low, high = min(yoy + [0, overall]), max(yoy + [0, overall])
-    pad = (high - low) * 0.15
+    pad = max((high - low) * 0.15, 0.5)
     ax.set_ylim(low - pad, high + pad)
     to_points = 72.0 / fig.dpi
     for i, v in enumerate(yoy):
@@ -248,21 +245,29 @@ def chart(result, release, png, pdf):
                     fontsize=11, zorder=4,
                     bbox=dict(boxstyle="square,pad=0.1", fc="white", ec="none", alpha=0.85))
     ax.set_xticks(x)
-    ax.set_xticklabels([MONTHS[m.month - 1][:3] for m in months], fontsize=11)
+    ax.set_xticklabels([MONTHS[m.month - 1][:3] + ("\n" + str(m.year) if i == 0 or m.month == 1 else "")
+                        for i, m in enumerate(months)], fontsize=11)
+    if span == 24:
+        ax.axvline(11.5, color="#bbbbbb", linestyle=":", linewidth=1)
+    for i, change in enumerate(result.get("annual_changes_pct", [])):
+        ax.text(i * 12 + 5.5, 0.975, "Year to %s: pooled annual increase %+.1f%%"
+                % (label(months[i * 12 + 11]), change), transform=ax.get_xaxis_transform(),
+                ha="center", va="top", fontsize=12, fontweight="bold", color="#444444")
     ax.set_ylabel("Change from same month a year earlier (%)", fontsize=12)
     ax.grid(axis="y", color="#dddddd", linewidth=0.8)
     ax.set_axisbelow(True)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     ax.legend(loc="lower right", bbox_to_anchor=(1, 1.01), frameon=False, fontsize=11)
-    fig.suptitle("Christchurch City rent growth", x=0.07, ha="left", y=0.965,
+    fig.suptitle(location + " rent growth", x=0.07, ha="left", y=0.965,
                  fontsize=20, fontweight="bold")
     ax.set_title("Year-on-year change in MBIE geometric mean weekly rent\n%s to %s"
                  % (label(months[0]), label(months[-1])), loc="left", fontsize=13, color="#444444", pad=14)
     fig.text(0.07, 0.03,
-             "Source: MBIE / Tenancy Services, detailed monthly territorial-authority rental bond data, "
-             "Christchurch City, %s release. Overall 12-month geometric mean is pooled from MBIE monthly "
-             "geometric means weighted by lodged bonds." % release,
+             "Source: MBIE / Tenancy Services Market Rent API, %s; retrieved %s. "
+             "Annual means are exp(lmean) from separate 12-month API queries. "
+             "Overall change compares annual windows ending %s and %s."
+             % (location, release, result["previous_period"]["end"], result["latest_period"]["end"]),
              ha="left", va="bottom", fontsize=9.5, color="#555555", wrap=True)
     fig.savefig(str(png), dpi=150)
     fig.savefig(str(pdf))
@@ -276,107 +281,123 @@ def dollars(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project-dir", type=Path, required=True,
-                        help="directory the agent session was opened in; outputs go to runs/<YYYY-MM-DD>/")
-    parser.add_argument("--page-html", type=Path, help="fallback: saved copy of the official landing page")
-    parser.add_argument("--csv", type=Path, help="fallback: saved 'By territorial authority' CSV from that page")
-    parser.add_argument("--current-rent", type=float, help="property's current weekly rent in dollars")
+    parser.add_argument("--project-dir", type=Path, required=True)
+    parser.add_argument("--location", default=LOCATION, help="exact territorial-authority label")
+    parser.add_argument("--end-month", help="YYYY-MM; defaults to latest API-eligible month")
+    parser.add_argument("--months", type=int, choices=(12, 24), default=12)
+    parser.add_argument("--environment", choices=("production", "sandbox"), default="production")
+    parser.add_argument("--current-rent", type=float)
     args = parser.parse_args()
-    if args.current_rent is not None and not 0 < args.current_rent < float("inf"):
-        fail("--current-rent must be a positive number of dollars, got %r" % args.current_rent)
-
-    references = check_references()
+    if args.current_rent is not None and (not math.isfinite(args.current_rent) or args.current_rent <= 0):
+        fail("--current-rent must be finite and positive")
+    eligible = shift(date.today().replace(day=1), -2)
+    if args.end_month:
+        if not re.fullmatch(r"\d{4}-\d{2}", args.end_month):
+            fail("--end-month must be YYYY-MM")
+        try:
+            end = date.fromisoformat(args.end_month + "-01")
+        except ValueError:
+            fail("invalid --end-month")
+    else:
+        end = eligible
+    if end > eligible:
+        fail("--end-month is newer than the API-eligible month " + iso(eligible))
     project = args.project_dir.resolve()
     if not project.is_dir():
         fail("project directory does not exist: " + str(project))
+    key = os.environ.get("MBIE_MARKET_RENT_API_KEY")
+    if not key:
+        try:
+            key = json.loads(CREDENTIALS.read_text(encoding="utf-8"))[args.environment]["primary_key"]
+        except (OSError, ValueError, KeyError, TypeError):
+            fail("configure api_credentials.json or MBIE_MARKET_RENT_API_KEY")
+    if not isinstance(key, str) or not key.strip():
+        fail("Market Rent API key is empty or invalid")
+    check_references()
     retrieved = datetime.now().astimezone()
-    out_dir = project / "runs" / retrieved.strftime("%Y-%m-%d")
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", args.location).strip("_")
+    out_dir = project / "outputs" / "runs" / retrieved.strftime("%Y-%m-%d") / (
+        "%s_%s_%d_months_to_%s" % (slug, args.environment, args.months, iso(end)))
     source = out_dir / "source"
     source.mkdir(parents=True, exist_ok=True)
+    base = API_PATH.format(environment="gateway" if args.environment == "production" else "sandbox")
+    evidence = []
+    areas = api_get(base, "area-definitions/territorial-authority-2019", key, source, evidence)
+    selected = [row for row in areas["items"] if isinstance(row, dict) and row.get("label") == args.location]
+    if len(selected) != 1 or not isinstance(selected[0].get("code"), str):
+        fail("unknown or ambiguous district: " + args.location)
+    code = selected[0]["code"]
 
-    page_bytes = args.page_html.read_bytes() if args.page_html else fetch(PAGE_URL)
-    page = read_page(page_bytes.decode("utf-8"))
-    csv_bytes = args.csv.read_bytes() if args.csv else fetch(page["csv_url"])
-    (source / "rental-bond-data.html").write_bytes(page_bytes)
-    source_csv = source / Path(urlparse(page["csv_url"]).path).name
-    source_csv.write_bytes(csv_bytes)
-    source_sha = hashlib.sha256(csv_bytes).hexdigest()
+    def period(period_end, months):
+        payload = api_get(base, "statistics", key, source, evidence,
+                          **{"period-ending": iso(period_end), "num-months": months,
+                             "area-definition": "TA2019", "area-codes": code,
+                             "include-aggregates": "true"})
+        return api_period(payload, args.location, period_end, months)
 
-    end = page["end"]
-    rows, file_latest = load(source_csv)
-    if file_latest != end or max(rows) != end:
-        fail("CSV latest month %s (%s: %s) != page-advertised %s"
-             % (label(file_latest), LOCATION, label(max(rows)), label(end)))
-    result = analyse(rows, end)
-    for ref in references:
-        if ref["source_sha256"] == source_sha and not matches(result, ref):
-            fail("live results differ from fixture %s built from this same file" % ref["csv"])
-
+    # Direct annual API means avoid pooling monthly figures with rounded counts.
+    annual = [period(shift(end, offset), 12) for offset in range(-args.months, 1, 12)]
+    monthly_means = {}
+    for offset in range(-args.months - 11, 1):
+        month_end = shift(end, offset)
+        monthly_means[month_end] = period(month_end, 1)["pooled_geometric_mean"]
+    monthly = []
+    for offset in range(1 - args.months, 1):
+        month_end = shift(end, offset)
+        previous, latest = monthly_means[shift(month_end, -12)], monthly_means[month_end]
+        monthly.append((month_end, previous, latest, (latest / previous - 1) * 100))
+    changes = [(b["pooled_geometric_mean"] / a["pooled_geometric_mean"] - 1) * 100
+               for a, b in zip(annual, annual[1:])]
+    overall = (annual[-1]["pooled_geometric_mean"] / annual[0]["pooled_geometric_mean"] - 1) * 100
+    result = {"monthly": monthly, "previous_period": annual[0], "latest_period": annual[-1],
+              "overall_change_pct": overall, "annual_changes_pct": changes if args.months == 24 else []}
     proposed = None
-    if args.current_rent is not None:  # nearest $5, halves rounded up
-        proposed = 5 * math.floor(args.current_rent * (1 + result["overall_change_pct"] / 100) / 5 + 0.5)
-
-    stem = "MBIE_Christchurch_Rent_Growth_to_%s_%d" % (MONTHS[end.month - 1], end.year)
+    unrounded = None
+    if args.current_rent is not None:
+        unrounded = args.current_rent * (1 + overall / 100)
+        proposed = 5 * math.floor(unrounded / 5 + 0.5)
+    stem = "MBIE_%s_%d_Month_Rent_Growth_to_%s_%d" % (slug, args.months, MONTHS[end.month - 1], end.year)
     csv_out, png, pdf = (out_dir / (stem + ext) for ext in (".csv", ".png", ".pdf"))
     json_out = out_dir / (stem + "_summary.json")
-
     with csv_out.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["index", "Month", "Previous", "Latest", "YoY Change %"])
-        for i, (m, previous, latest, yoy) in enumerate(result["monthly"], 1):
+        for i, (m, previous, latest, yoy) in enumerate(monthly, 1):
             writer.writerow([i, label(m), previous, latest, yoy])
-    dashed = chart(result, page["release"], png, pdf)
-
+    dashed = chart(result, retrieved.strftime("%d %B %Y"), png, pdf, args.location)
     summary = {
-        "landing_page_url": PAGE_URL,
-        "csv_url": page["csv_url"],
-        "retrieval": "supplied files" if args.page_html or args.csv else "downloaded by script",
-        "retrieved_at": retrieved.isoformat(timespec="seconds"),
-        "page_link_text": page["link_text"],
-        "page_last_updated": page["last_updated"],
-        "advertised_end_month": iso(end),
-        "release_label": page["release"],
-        "source_file": str(source_csv),
-        "source_sha256": source_sha,
+        "source": "MBIE Market Rent API v2", "environment": args.environment,
+        "retrieved_at": retrieved.isoformat(timespec="seconds"), "data_end_month": iso(end),
+        "end_month_selection": "explicit" if args.end_month else "latest eligible month; response dates validated",
+        "location": args.location, "area_definition": "TA2019", "area_code": code,
+        "dwelling_type": "ALL", "bedrooms": "ALL", "chart_months": args.months,
+        "previous_period": annual[0], "latest_period": annual[-1], "annual_periods": annual,
+        "annual_changes_pct": changes, "overall_change_pct": overall, "chart_dashed_line_pct": dashed,
+        "monthly_yoy_pct": {label(m): yoy for m, _, _, yoy in monthly},
+        "method_note": "Geometric means are exp(lmean) from each requested API period. Annual means use "
+                       "direct 12-month queries, not pooled rounded monthly means. Monthly points are YoY; "
+                       "overall change compares annual means separated by the chart horizon. Counts are randomly rounded.",
+        "current_weekly_rent": args.current_rent, "adjusted_weekly_rent_unrounded": unrounded,
+        "proposed_weekly_rent": proposed, "requests": evidence,
         "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        "location": LOCATION,
-        "previous_period": result["previous_period"],
-        "latest_period": result["latest_period"],
-        "overall_change_pct": result["overall_change_pct"],
-        "chart_dashed_line_pct": dashed,
-        "monthly_yoy_pct": dict((label(m), yoy) for m, _, _, yoy in result["monthly"]),
-        "method_note": "Pooled 12-month geometric means are reconstructed from MBIE's published (rounded) "
-                       "monthly geometric means weighted by monthly lodged bonds; not a transaction-level "
-                       "geometric mean.",
-        "provisional_data_warning": page["warning"],
-        "current_weekly_rent": args.current_rent,
-        "proposed_weekly_rent": proposed,
     }
     json_out.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-
     with csv_out.open(encoding="utf-8", newline="") as fh:
         written = list(csv.DictReader(fh))
-    if len(written) != 12:
-        fail("analysis CSV has %d rows, expected 12" % len(written))
-    for row in written:
-        recomputed = (float(row["Latest"]) / float(row["Previous"]) - 1) * 100
-        if not math.isclose(recomputed, float(row["YoY Change %"]), rel_tol=1e-12, abs_tol=1e-12):
-            fail("stored YoY does not recompute for " + row["Month"])
-    if json.loads(json_out.read_text(encoding="utf-8"))["overall_change_pct"] != dashed:
-        fail("chart dashed line differs from the summary JSON overall change")
-
-    print("Release %s, data to %s (page last updated %s)" % (page["release"], label(end), page["last_updated"]))
-    for m, previous, latest, yoy in result["monthly"]:
-        print("  %-15s %6.0f -> %6.0f  %+6.2f%%" % (label(m), previous, latest, yoy))
-    for key in ("previous_period", "latest_period"):
-        period = result[key]
-        print("%s: %d bonds, pooled geometric mean %.4f" % (period["label"], period["lodged_bonds"],
-                                                            period["pooled_geometric_mean"]))
-    print("Overall 12-month change: %+.4f%%" % result["overall_change_pct"])
+    if len(written) != args.months or any(not math.isclose(
+            (float(row["Latest"]) / float(row["Previous"]) - 1) * 100,
+            float(row["YoY Change %"]), rel_tol=1e-12, abs_tol=1e-12) for row in written):
+        fail("analysis CSV does not reproduce monthly YoY values")
+    if dashed != overall:
+        fail("chart dashed line differs from overall change")
+    print("MBIE Market Rent API (%s), %s, data through %s" % (args.environment, args.location, label(end)))
+    for window in annual:
+        print("%s: %d bonds (randomly rounded), geometric mean $%.4f" %
+              (window["label"], window["lodged_bonds"], window["pooled_geometric_mean"]))
+    print("Overall %d-month change: %+.4f%%" % (args.months, overall))
     if proposed is not None:
-        unrounded = args.current_rent * (1 + result["overall_change_pct"] / 100)
-        print("Proposed rent: %s -> %s per week (%+.1f%% gives $%.2f, rounded to the nearest $5)"
-              % (dollars(args.current_rent), dollars(proposed), result["overall_change_pct"], unrounded))
+        print("Proposed rent: %s -> %s per week (%+.1f%% gives $%.2f, rounded to nearest $5)"
+              % (dollars(args.current_rent), dollars(proposed), overall, unrounded))
     for path in (pdf, png, csv_out, json_out):
         print(path)
 
