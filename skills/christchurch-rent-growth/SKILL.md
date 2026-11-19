@@ -1,111 +1,98 @@
 ---
 name: christchurch-rent-growth
-description: Use when asked to update, recalculate, verify, or chart Christchurch City rent growth from MBIE / Tenancy Services rental bond data, or to draft a Christchurch rent-review recommendation for a landlord.
+description: Create bedroom-specific property rental reports comparing a suburb with Christchurch City using Tenancy Services bond data, rolling geometric means, annual medians and bond lodgements since a chosen rent-review date.
 ---
 
-# Christchurch rent growth
+# Property rent review and bond report
 
-Chart Christchurch City rent growth from the **latest** MBIE / Tenancy Services monthly territorial-authority rental-bond release, and draft the landlord's rent-review message from it. Each release changes the CSV filename, the data end month, and the page's "Last updated" date, so every run rediscovers them from the official page; nothing from an earlier run or another machine is reused.
+Use the production MBIE / Tenancy Services Market Rent API. The default deliverable is a branded PDF comparing the property's local market with Christchurch City for the **same bedrooms, dwelling type and dates**. Run `scripts/rent_review.py`; do not rewrite the workflow in each chat.
 
-This skill folder ships everything the run needs; resolve these paths relative to this `SKILL.md`:
+## Intake: ask about the last rent increase first
 
-- `scripts/christchurch_rent_growth.py` — the whole pipeline: download, freshness checks, calculation, outputs, chart, validation. It fails closed with a `VALIDATION FAILED` or `DOWNLOAD FAILED` line.
-- `references/` — frozen regression fixtures the script recomputes before every run (see [Regression fixtures](#regression-fixtures)).
+Establish from the user or conversation:
+
+- Property address and suburb.
+- Bedroom count and dwelling type. Match the property; use House for a house in both markets. Ask about unclear types or state an appropriate assumption before proceeding.
+- **When was the rent last set or increased, or what start date should the comparison use?** Ask at the start if not already known. Accept a user-selected comparison period instead.
+- End month. If unspecified, use the latest API-eligible month, two calendar months before the current local month, then validate returned coverage. If unavailable, disclose this and establish an available endpoint.
+
+Bundle missing information into one short question: "When was the rent last increased, or what start month should we compare from? How many bedrooms does the property have?" Ask for the address/type too if needed; never ask again for supplied information. Current weekly rent is needed only for a dollar recommendation.
+
+Map an exact increase date to its calendar month. Explain the rolling baseline before running: January 2025 means the **12 months February 2024-January 2025**, not January alone. January 2025-August 2026 gives 20 rolling monthly points; the endpoint change is not an annual growth rate.
+
+## Geography
+
+Resolve the address and inspect `area-definitions/SAU2019` before choosing codes. SA2 statistical areas are not postal suburbs; a suburb can span several. Verify each selected code/label and identify the actual grouping in the report. Do not silently present an arbitrary grouping as an exact postal suburb. If coverage cannot be established, ask the smallest scope question.
+
+The established Mairehau selection is **Mairehau North 321700 + Mairehau South 323100**, labelled **Mairehau North + South**. Christchurch City is **TA2019 060**. Other addresses require their own lookup; honor the user's chosen groupings and exclusions.
+
+The website market-rent tool uses NZAD suburb regions. Before treating a website/API difference as an error, match geography, dates, bedrooms, dwelling type, measure and bond population. Website medians are not geometric means. Do not assume its bond count means API nLodged or nCurr. An unresolved-boundary warning is not required on the report; label the actual selected areas accurately.
+
+## API and configuration
+
+- Production base: https://api.business.govt.nz/gateway/tenancy-services/market-rent/v2/
+- Documentation: https://portal.api.business.govt.nz/api/market-rent
+- Authentication header: Ocp-Apim-Subscription-Key; JSON responses.
+- Set `MBIE_MARKET_RENT_API_KEY`, or create a local `api_credentials.json` beside this skill with the key under `production.primary_key`. The environment variable takes precedence. Never print keys or include auth headers in evidence.
+
+This is the statistical Market Rent API, not the transactional Tenancy Bond API. Do not substitute sandbox, CSV, invented values or stale periods on failure.
+
+The runner resolves code/label lookups, then requests each rolling endpoint sequentially with num-months=12 and include-aggregates=true. It uses area codes and the selected dwelling/bedroom filters. Exact ALL aggregates are selected only for explicitly requested all-type/all-bedroom scopes. Combined local areas use area=ALL; individual areas use their exact labels. Reject missing, duplicate, suppressed, wrong-period or wrong-geography aggregates.
 
 ## Run
 
-1. **Ask first**: your opening message asks for the property address and current weekly rent, unless the request already gives both, then waits for the reply. Done when you have both.
-2. **Project directory**: the directory the agent session was opened in. Outputs always go to `<project>/runs/<YYYY-MM-DD>/` (local run date), with source evidence in its `source/` subfolder. A same-day re-run replaces that day's outputs.
-3. **Interpreter**: find Python 3.8+ that can `import matplotlib`. If none can, create `<project>/runs/.venv`, install `matplotlib` into it, and use its interpreter — `runs/.venv/bin/python` on macOS/Linux, `runs\.venv\Scripts\python.exe` on Windows. Reuse that environment on later runs. If Python or package installation is unavailable, report that blocker.
-4. **Execute** with absolute, quoted paths (project paths often contain spaces):
-   `"<python>" "<skill-dir>/scripts/christchurch_rent_growth.py" --project-dir "<project>" --current-rent <weekly rent>`
-   Done when it prints the release, results, `Proposed rent` line, and four output paths. On any failure line, stop and report it; never build the chart or numbers another way.
-5. **Inspect** the PNG against the [chart contract](#chart-contract): no clipped text, no point label touching the line, another label, or the legend, and a legible footer. Fix layout problems in the script, then re-run and re-inspect.
-6. **Report** the release, data end month, both periods' lodged bonds and pooled geometric means, the overall change, and the actual output paths (attach the files if the host supports it). The monthly values are on the chart; do not repeat them in a table. End with the [landlord message](#landlord-message).
-
-### When Python cannot download
-
-If the script prints `DOWNLOAD FAILED` (blocked network, missing CA certificates), use any other available tool — curl, a browser, a web download — to save the raw bytes of the official landing page and of the CSV that page links as "By territorial authority", then re-run with `--page-html "<page file>" --csv "<csv file>"` added. The script still takes every freshness value from the saved page. A search snippet, rendered preview, or previously downloaded file is not a substitute; if the current page and CSV cannot both be obtained, stop and report that freshness could not be verified.
-
-## Landlord message
-
-Tell the user the proposed rent is rounded to the nearest $5, quoting the unrounded figure from the `Proposed rent` line; the landlord message itself does not mention rounding. Introduce it as an example message for the landlord that may need adjusting, then give the filled template as plain text inside a `text` code block, so copying it picks up no quote markers or other formatting:
+Use Python with matplotlib; reuse the current project's suitable environment. Paths and the logo resolve relative to the installed skill, independently of this chat.
 
 ```text
-We've carried out a rent review for [property address], based on MBIE bond lodgement data for Christchurch over the past 12 months. We'd recommend increasing the rent from $[current rent] to $[proposed rent] per week.
-
-Christchurch rents have gone up around [X]% over the past 12 months (see attached), so this change brings it more in line with the current market.
-
-Please let me know your thoughts, and we'll send the required 60-day rent increase notice through to the tenants once confirmed.
+"<python>" "<skill-dir>/scripts/rent_review.py" --project-dir "<project>" --address "90 Aylesford Street, Mairehau, Christchurch 8013" --suburb "Mairehau" --area-codes "321700,323100" --bedrooms 3 --dwelling-type House --start-month 2025-01 --end-month 2026-08
 ```
 
-[proposed rent] comes from the script's `Proposed rent` line: current rent × (1 + overall change), rounded to the nearest $5. [X] is the overall 12-month change to one decimal, as in the chart legend. The attachment is the chart PNG. If the overall change is zero or negative, send no increase message; tell the user rents did not rise.
+Replace all example inputs with the actual selection. Dates use YYYY-MM. Area codes are verified comma-separated six-digit SA2 2019 codes. Bedrooms accepts 1, 2, 3, 4, 5, 5+ or explicit ALL. Dwelling types: House, Flat, Apartment, BoardingHouse, Room, ALL. The API returns distinct 5 and 5+ rows: do not merge or reinterpret them without confirming their meaning.
 
-## Freshness evidence
+Outputs: `<project>/outputs/<address>_<dwelling>_<bedrooms>_<start>_to_<end>/`, containing rent_review.pdf, rent_review.png, rolling_comparison.csv, summary.json and source/ raw JSON. Summary evidence includes request URLs, file paths and SHA-256 values. A completed run is preserved; use a fresh project directory for reruns. Retrieval date is not a dataset release date.
 
-Read from the official page `https://www.tenancy.govt.nz/about-tenancy-services/data-and-statistics/rental-bond-data/` on every run. Values change monthly; the page positions below are what stays fixed.
+## Calculation contract
 
-| Evidence | Where on the page | Use |
-|---|---|---|
-| Advertised end month | Heading `Rental bond data, <Month Year> to <Month Year>`; the CSV link text must end at the same month | Must equal the latest month in the downloaded CSV |
-| Release label | `Last updated <day> <Month> <Year>` line directly below that heading | `<Month> <Year>` in the chart footer and summary |
-| CSV URL | The one link whose text starts `By territorial authority` (not the regional or quarterly files) | Download source |
-| Provisional-data warning | The `Important:` notice, when present | Recorded in the summary JSON only; not repeated in chat |
+- **Primary rent measure:** exp(lmean) from a direct API aggregate for each complete 12-month window.
+- **Rolling growth:** (G_window / G_baseline - 1) * 100. Keep the selected baseline throughout any user-selected horizon.
+- **Median cross-check:** direct API med for that same complete annual window and property selection. Use the combined API row for grouped local areas. Never average monthly or individual-area medians.
+- **Endpoint table:** baseline and latest geometric means and medians, each with its own percentage change. State exact window dates. Do not switch to arithmetic averages in subsequent explanation.
+- **Bonds:** direct annual nLodged, not nCurr (active bonds at endpoint). Counts are randomly rounded; totals can differ from summed cells. Label bars "Year to [month/year]" and give the full annual windows. These are not cumulative lodgements since the rent increase or counts of tenants receiving increases.
 
-The page instructs users to always take the latest file because recent months are revised as bonds are processed; a stale or mismatched file is a failure, never a fallback.
+Do not reconstruct annual or grouped means from rounded counts when a direct aggregate exists. Excluding one-bedroom labels from an otherwise all-bedroom analysis is a separate approximate analysis: the API's bedroom filter does not necessarily recompute the ALL subtotal. Disclose reconstruction and aggregate inconsistencies; never silently use these estimates in the standard report. Unknown-bedroom records are not known two-plus-bedroom properties.
 
-## Source file
+Geometric means support proportional comparisons and reduce influence from unusually high rents relative to arithmetic means. They do not fix invalid records, hold property mix constant or measure increases on the same homes. Medians provide a cross-check; neither measure is inherently more accurate in every sample.
 
-MBIE has changed the file layout between releases; the script accepts exactly these two and fails on anything else:
+Tenancy Services acknowledges inaccurate bedroom counts among some one-bedroom records, affecting counts and rents. When that category is included, identify its relevance without asserting an unproven cause or silently dropping records. Exclusion does not repair mislabelled larger homes. Provisional data/reclassification may affect remaining groups too.
 
-| Releases | Month, location, bonds, mean columns | Month format | Numbers |
-|---|---|---|---|
-| September 2026 onward | `TimeFrame`, `location`, `LodgedBonds`, `GeometricMeanRent` (UTF-8 with byte-order mark) | `1/07/2026` | plain |
-| August 2026 and earlier | `Time Frame`, `Location`, `Lodged Bonds`, `Geometric Mean Rent` (every field quoted) | `2026-06-01` | thousands commas (`"1,101"`) |
+## Report design
 
-Every row is the first of a month; `Christchurch City` must match exactly, once per month, with positive bond counts and means. When MBIE introduces a new layout, add it to `FORMATS` in the script and prove it against that release's independently calculated results rather than loosening the parser.
+Use the bundled runner's established single-page style: warm off-white, slate local-market lines, teal city lines, restrained grids, clear figures and readable labels. Include:
 
-## Calculation
+1. Address, local grouping, bedrooms/type, baseline and endpoint.
+2. Latest geometric means and change from baseline.
+3. Rolling 12-month geometric rent lines and a matching growth panel.
+4. Baseline/latest annual geometric means and medians with percentage changes.
+5. Annual bond-lodgement bars for each market, counts and changes; separate scales keep the suburb visible.
+6. Concise methods, source, retrieval date, geography codes and provisional-data notation.
 
-Latest window: the 12 consecutive months ending at the advertised end month. Previous window: the same 12 months one year earlier.
+Use assets/company_logo.png at the top right. Crop the transparent margins using the runner's established viewport; show the visible artwork 52 pt high, aligned with the heading, preserving proportions and full resolution. Do not return to the oversized or tiny variants.
 
-- Monthly `YoY % = (G_month / G_same_month_previous_year - 1) * 100`, from MBIE's published geometric mean weekly rent.
-- Pooled window mean `G = exp(sum(n_m * ln(G_m)) / sum(n_m))`, weighted by monthly `LodgedBonds`.
-- `Overall % = (G_latest_window / G_previous_window - 1) * 100`.
+Use the available PDF skill's authoring and render/verify workflow. Inspect the actual final PDF for data, dates, endpoint labels, table/bar windows, logo and footer. Adapt layout for long addresses or market labels. Deliver the PDF with concise scope, baseline and geometric changes. When asked only for figures, do not create another chart.
 
-The pooled figure is reconstructed from MBIE's published, rounded monthly geometric means; never describe it as a transaction-level geometric mean. Never substitute median rent, an arithmetic mean, an average of monthly YoY values, or an unweighted mean.
+## Owner message, when requested
 
-## Outputs
+State the bedroom count and dwelling type explicitly. Explain geometric growth and the median cross-check as different measures, not an arbitrary range of possible increases. Do not claim geometric means are inherently superior. A modest/flat local trend supports only a cautious recommendation, assessed with supplied comparables and tenant retention. Do not invent a recommended dollar rent without necessary inputs. Mention any recommendation once and avoid a repetitive closing summary.
 
-In `runs/<YYYY-MM-DD>/`, named `MBIE_Christchurch_Rent_Growth_to_<Month>_<Year>` after the data end month:
+## Verification and legacy mode
 
-- `.pdf` and `.png` — the chart.
-- `.csv` — columns `index,Month,Previous,Latest,YoY Change %`; 12 rows, full month labels (`August 2025`), unrounded values.
-- `_summary.json` — page and CSV URLs, retrieval method and time, page evidence, release label, source and script SHA-256, both windows' date ranges, lodged bonds and pooled means, overall change, chart dashed-line value, monthly YoY values, method note, provisional-data warning.
-- `source/` — the landing page and CSV exactly as analysed.
+After changes run:
 
-## Chart contract
+```text
+"<python>" -m unittest discover -s "<skill-dir>/scripts" -p "test_rent*.py"
+"<python>" "<skill-creator-dir>/scripts/quick_validate.py" "<skill-dir>"
+```
 
-- 4:3 white figure. Title **Christchurch City rent growth**; subtitle lines **Year-on-year change in MBIE geometric mean weekly rent** and the latest window's range, e.g. **August 2025 to July 2026**.
-- Blue line with circular markers for the 12 monthly YoY values.
-- A label on every point, signed to one decimal (`+2.6%`, `-0.4%`), placed where the line is not: above a peak, below a trough, upper-left of a rising point, upper-right of a falling point; a label that would sit on the dashed line moves clear of it.
-- Orange dashed horizontal line at the pooled overall change; grey zero baseline; light horizontal gridlines.
-- Frameless legend above the plot, right-aligned with its top-right corner and level with the subtitle, clear of the axes, gridlines, line, and point labels. Labels: `Monthly year-on-year change`, `Overall 12-month change: +X.X%`.
-- Y-axis **Change from same month a year earlier (%)**; x-axis abbreviated month names only.
-- Footer: `Source: MBIE / Tenancy Services, detailed monthly territorial-authority rental bond data, Christchurch City, <release label> release. Overall 12-month geometric mean is pooled from MBIE monthly geometric means weighted by lodged bonds.`
+The rent-review tests check direct annual medians/geometric means, arbitrary baseline dates, the same bedroom/type selection in both markets, and rejection of wrong periods/bedrooms. After API/rendering changes also run a live production smoke report and inspect the rendered PDF.
 
-## Checks
-
-The script fails the run, writing no chart from partial or stale data, unless every one holds:
-
-- The CSV link was resolved from the current page, and the page's heading, link text, and CSV all end at the same month.
-- The header matches one known layout and every month parses; `Christchurch City` has exactly one row per month and a same-month prior-year row for all 12 months; means and bond counts are positive.
-- Every regression fixture reproduces its expected results.
-- The analysis CSV has 12 rows and each stored YoY value recomputes from `Previous` and `Latest`.
-- The chart's dashed-line value equals the summary JSON's overall change.
-
-## Regression fixtures
-
-Each `references/<release>.json` names a frozen CSV of that release's 24 Christchurch rows (original header and layout kept) and its expected 12 monthly YoY values, both windows' lodged-bond totals and pooled geometric means, and overall change. Before touching live data, the script recomputes every fixture and requires a match; if the live CSV is byte-identical to a fixture's source (same SHA-256), the live results must match it too.
-
-Fixtures prove the code, not the current release, so they come from a release **older** than the live one: every live run is then out-of-sample, the same situation as the next release arriving. The current fixture is the August 2026 release (data to June 2026, older layout), with expected values calculated independently of the script. Live numbers differing from the fixture is expected. Add a fixture only when a release changes the layout or exposes a bug, with its expected values calculated outside the script and reviewed by the user; never generate a fixture from the script's own output.
+The older scripts/christchurch_rent_growth.py remains for explicitly requested district-wide monthly-YoY reports with 12/24-month horizons. Its old district chart is not the default property report. The frozen August 2026 CSV fixtures test only the legacy calculation; never adjust current API results to match them.

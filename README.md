@@ -1,8 +1,8 @@
 # Christchurch rent growth skill
 
-An agent skill that charts Christchurch City rent growth from the latest MBIE / Tenancy Services rental bond data and drafts a rent-review message for a landlord.
+An agent skill that compares rents for a property's bedroom count and dwelling type in its local market and Christchurch City using the MBIE / Tenancy Services Market Rent API.
 
-On each run the agent asks for the property address and current weekly rent, downloads the current official release, and writes a chart (PNG and PDF), monthly CSV, and summary JSON to `runs/<date>/` in the folder it was opened in. It finishes with an example landlord message, with the proposed rent rounded to the nearest $5.
+The agent uses the property address, bedroom count, dwelling type and rent-review dates to build a branded PDF with rolling 12-month geometric means, annual medians and bond lodgements. The report, PNG, CSV, summary and API evidence are saved under `outputs/`. Ask for a landlord message if you need one.
 
 ## Install
 
@@ -22,4 +22,4 @@ Start a new session after installing, then ask for a Christchurch rent review.
 
 ## Requirements
 
-Python 3.8 or newer and internet access. The skill installs Matplotlib into `runs/.venv` on first use if it is missing. Works on Windows, macOS, and Linux.
+Use Python with Matplotlib installed and internet access. A [Market Rent API subscription key](https://portal.api.business.govt.nz/api/market-rent) is required. Set `MBIE_MARKET_RENT_API_KEY` in the environment running the report, or create a local `api_credentials.json` beside `SKILL.md` with the key under `production.primary_key`. The repository excludes local credential files.
