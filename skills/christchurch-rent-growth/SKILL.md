@@ -1,6 +1,6 @@
 ---
 name: christchurch-rent-growth
-description: Create bedroom-specific property rental reports comparing a suburb with Christchurch City using Tenancy Services bond data, rolling geometric means, annual medians and bond lodgements since a chosen rent-review date.
+description: Create bedroom-specific property rental reports comparing a named suburb or the suburb plus adjoining areas with Christchurch City using Tenancy Services bond data, rolling geometric means, annual medians and bond lodgements since a chosen rent-review date.
 ---
 
 # Property rent review and bond report
@@ -11,7 +11,8 @@ Use the production MBIE / Tenancy Services Market Rent API. The default delivera
 
 Establish from the user or conversation:
 
-- Property address and suburb.
+- Property address and the actual suburb supplied by the user.
+- Local scope. Use the named suburb alone by default. Include its adjoining areas when requested. Compare either local scope with Christchurch City.
 - Bedroom count and dwelling type. Match the property; use House for a house in both markets. Ask about unclear types or state an appropriate assumption before proceeding.
 - **When was the rent last set or increased, or what start date should the comparison use?** Ask at the start if not already known. Accept a user-selected comparison period instead.
 - End month. If unspecified, use the latest API-eligible month, two calendar months before the current local month, then validate returned coverage. If unavailable, disclose this and establish an available endpoint.
@@ -22,9 +23,18 @@ Map an exact increase date to its calendar month. Explain the rolling baseline b
 
 ## Geography
 
-Resolve the address and inspect `area-definitions/SAU2019` before choosing codes. SA2 statistical areas are not postal suburbs; a suburb can span several. Verify each selected code/label and identify the actual grouping in the report. Do not silently present an arbitrary grouping as an exact postal suburb. If coverage cannot be established, ask the smallest scope question.
+Use the **named suburb** to select the starting SA2. The address is for verification and the report heading. A point-in-polygon assignment never determines the starting area. For example, a Burwood address inside the Travis Wetlands statistical area still starts from Burwood 325600 when Burwood is the supplied suburb.
 
-The established Mairehau selection is **Mairehau North 321700 + Mairehau South 323100**, labelled **Mairehau North + South**. Christchurch City is **TA2019 060**. Other addresses require their own lookup; honor the user's chosen groupings and exclusions.
+The bundled [Christchurch address and rent-area index](references/christchurch-address-index.sqlite) resolves the supplied suburb, optionally verifies the address, and returns the verified API codes and neighbouring areas in one local run:
+
+```text
+"<python>" "<skill-dir>/scripts/rent_review.py" --lookup --suburb "Burwood" --include-adjoining
+```
+
+- An exact Christchurch statistical area name takes precedence. Mairehau uses Mairehau North 321700 and Mairehau South 323100. Richmond uses Richmond North 325900 and Richmond South 326800. For other suburbs with only partial name matches, present the candidates and confirm the intended grouping. For an unmatched suburb, ask which named area represents the intended market. Use --area-codes only for an explicitly confirmed selection from the matching area names and their adjoining areas.
+- With --include-adjoining, include the starting areas and the union of areas sharing a boundary stretch with them. Deduplicate the codes. Point-only contacts are excluded. The lookup flags neighbours outside Christchurch City so their inclusion is visible. Honor explicit exclusions by supplying the confirmed set through --area-codes without --include-adjoining.
+- The bundled [2019 SA2 boundaries and neighbours](references/christchurch-sa2-2019.geojson) support map verification and list shared boundary lengths. The address index is a snapshot of LINZ address data. An unmatched address may need separate verification. Keep the comparison anchored to the confirmed suburb.
+- Christchurch City is TA2019 060. Name the actual combined areas in the summary and use a short local label in the standard PDF.
 
 The website market-rent tool uses NZAD suburb regions. Before treating a website/API difference as an error, match geography, dates, bedrooms, dwelling type, measure and bond population. Website medians are not geometric means. Do not assume its bond count means API nLodged or nCurr. An unresolved-boundary warning is not required on the report; label the actual selected areas accurately.
 
@@ -37,17 +47,17 @@ The website market-rent tool uses NZAD suburb regions. Before treating a website
 
 This is the statistical Market Rent API, not the transactional Tenancy Bond API. Do not substitute sandbox, CSV, invented values or stale periods on failure.
 
-The runner resolves code/label lookups, then requests each rolling endpoint sequentially with num-months=12 and include-aggregates=true. It uses area codes and the selected dwelling/bedroom filters. Exact ALL aggregates are selected only for explicitly requested all-type/all-bedroom scopes. Combined local areas use area=ALL; individual areas use their exact labels. Reject missing, duplicate, suppressed, wrong-period or wrong-geography aggregates.
+The runner resolves code/label lookups from the bundled index, then requests each rolling endpoint sequentially with num-months=12 and include-aggregates=true. It uses area codes and the selected dwelling/bedroom filters. Exact ALL aggregates are selected only for explicitly requested all-type/all-bedroom scopes. Combined local areas use the direct area=ALL result when all requested areas are listed. If the API omits an individual area from a grouped response, the runner requests a named group with the same SA2 codes for that window and the rest of the local series. It validates the named aggregate and keeps the original PDF. Individual areas use their exact labels. Reject missing, duplicate, suppressed, wrong-period or wrong-geography aggregates.
 
 ## Run
 
 Use Python with matplotlib; reuse the current project's suitable environment. Paths and the logo resolve relative to the installed skill, independently of this chat.
 
 ```text
-"<python>" "<skill-dir>/scripts/rent_review.py" --project-dir "<project>" --address "90 Aylesford Street, Mairehau, Christchurch 8013" --suburb "Mairehau" --area-codes "321700,323100" --bedrooms 3 --dwelling-type House --start-month 2025-01 --end-month 2026-08
+"<python>" "<skill-dir>/scripts/rent_review.py" --project-dir "<project>" --address "90 Aylesford Street, Mairehau, Christchurch 8013" --suburb "Mairehau" --include-adjoining --bedrooms 3 --dwelling-type House --start-month 2025-01 --end-month 2026-08
 ```
 
-Replace all example inputs with the actual selection. Dates use YYYY-MM. Area codes are verified comma-separated six-digit SA2 2019 codes. Bedrooms accepts 1, 2, 3, 4, 5, 5+ or explicit ALL. Dwelling types: House, Flat, Apartment, BoardingHouse, Room, ALL. The API returns distinct 5 and 5+ rows: do not merge or reinterpret them without confirming their meaning.
+Replace all example inputs with the actual selection. Dates use YYYY-MM. Omit --include-adjoining for the suburb-only comparison. The same runner and PDF template cover both scopes. Bedrooms accepts 1, 2, 3, 4, 5, 5+ or explicit ALL. Dwelling types: House, Flat, Apartment, BoardingHouse, Room, ALL. The API returns distinct 5 and 5+ rows: do not merge or reinterpret them without confirming their meaning.
 
 Outputs: `<project>/outputs/<address>_<dwelling>_<bedrooms>_<start>_to_<end>/`, containing rent_review.pdf, rent_review.png, rolling_comparison.csv, summary.json and source/ raw JSON. Summary evidence includes request URLs, file paths and SHA-256 values. A completed run is preserved; use a fresh project directory for reruns. Retrieval date is not a dataset release date.
 
@@ -93,6 +103,6 @@ After changes run:
 "<python>" "<skill-creator-dir>/scripts/quick_validate.py" "<skill-dir>"
 ```
 
-The rent-review tests check direct annual medians/geometric means, arbitrary baseline dates, the same bedroom/type selection in both markets, and rejection of wrong periods/bedrooms. After API/rendering changes also run a live production smoke report and inspect the rendered PDF.
+The rent-review tests check that the named suburb controls the offline selection, direct annual medians/geometric means, arbitrary baseline dates, the same bedroom/type selection in both markets, and rejection of wrong periods/bedrooms. After API/rendering changes also run a live production smoke report and inspect the rendered PDF.
 
 The older scripts/christchurch_rent_growth.py remains for explicitly requested district-wide monthly-YoY reports with 12/24-month horizons. Its old district chart is not the default property report. The frozen August 2026 CSV fixtures test only the legacy calculation; never adjust current API results to match them.

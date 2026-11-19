@@ -5,8 +5,12 @@ import json
 import math
 import os
 import re
+import sqlite3
+import unicodedata
+from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.error import HTTPError
 
 import christchurch_rent_growth as growth
 import matplotlib.pyplot as plt
@@ -122,6 +126,10 @@ def render(summary: dict, out: Path) -> Path:
     return pdf
 
 
+class IncompleteAreaBreakdown(ValueError):
+    """The area-code response omitted part of a requested group."""
+
+
 def annual_row(payload: dict, definition: str, labels: list, end: date, dwelling: str, bedrooms: str) -> dict:
     start, last = growth.shift(end, -11), growth.shift(end, 1) - timedelta(days=1)
     try:
@@ -133,7 +141,11 @@ def annual_row(payload: dict, definition: str, labels: list, end: date, dwelling
     items = payload["items"]
     if not all(isinstance(r, dict) for r in items):
         growth.fail("API items must be objects")
-    if {r.get("area") for r in items} - {"ALL"} != set(labels):
+    returned = {r.get("area") for r in items} - {"ALL"}
+    expected = set(labels)
+    if definition == "SAU2019" and len(expected) > 1 and returned < expected:
+        raise IncompleteAreaBreakdown()
+    if returned != expected:
         growth.fail("API returned missing or unexpected named areas")
     area = "ALL" if len(labels) > 1 else labels[0]
     rows = [r for r in items if r.get("area") == area and r.get("dwell") == dwelling and r.get("nBedrms") == bedrooms]
@@ -154,12 +166,104 @@ def annual_row(payload: dict, definition: str, labels: list, end: date, dwelling
             "geometric_mean": geometric, "median": row["med"], "lodged_bonds": row["nLodged"]}
 
 
-def main(argv=None) -> Path:
+def named_group_statistics(params: dict, name: str, key: str, source: Path, evidence: list) -> dict:
+    query = {k: v for k, v in params.items() if k not in {"area-definition", "area-codes"}}
+    query["area-definition"] = "user-defined"
+    codes = params["area-codes"]
+    query["user-defined-area-mappings"] = f"{name} ({codes})"
+    try:
+        return growth.api_get(BASE, "statistics", key, source, evidence, **query)
+    except SystemExit as exc:
+        error = exc.__context__
+        if not isinstance(error, HTTPError) or error.code != 500:
+            raise
+    query["user-defined-area-mappings"] = f"{name}({codes})"
+    return growth.api_get(BASE, "statistics", key, source, evidence, **query)
+
+
+def lookup_key(value: str) -> str:
+    return " ".join("".join(c for c in unicodedata.normalize("NFKD", value.casefold())
+                            if not unicodedata.combining(c)).split())
+
+
+def local_market(suburb: str, address: str, area_codes: str | None, include_adjoining: bool) -> dict:
+    index = SKILL / "references/christchurch-address-index.sqlite"
+    with closing(sqlite3.connect(index.as_uri() + "?mode=ro", uri=True)) as db:
+        areas = {code: (name, neighbours.split(",") if neighbours else [], in_city)
+                 for code, name, neighbours, in_city in
+                 db.execute("SELECT code, name, adjoining_codes, in_christchurch_city FROM areas ORDER BY code")}
+        address_matches = set()
+        prefix = lookup_key(address)
+        if prefix:
+            alternate = re.sub(r"\bsaint\b", "st", prefix.replace("’", "").replace("'", ""))
+            for variant in {prefix, alternate}:
+                lower = variant + ","
+                address_matches.update(row[0] for row in db.execute(
+                    "SELECT full_address FROM address_lookup WHERE lookup_key = ? "
+                    "OR (lookup_key >= ? AND lookup_key < ?)", (variant, lower, variant + "-")))
+
+    suburb_key = lookup_key(suburb).removesuffix(" (christchurch city)")
+    if not suburb_key:
+        raise ValueError("supply a suburb name")
+    names = {code: lookup_key(name).removesuffix(" (christchurch city)")
+             for code, (name, _, in_city) in areas.items() if in_city}
+    exact = [code for code, name in names.items() if name == suburb_key]
+    candidates = exact or [code for code, name in names.items()
+                           if name.startswith((suburb_key + " ", suburb_key + "-"))]
+    if not candidates:
+        raise ValueError(f"no statistical area matches {suburb!r}; confirm the intended suburb area by name")
+    requested = area_codes.split(",") if area_codes else []
+    if requested:
+        if len(set(requested)) != len(requested) or any(code not in areas for code in requested):
+            raise ValueError("area-codes must be unique known SA2 2019 codes")
+        base = [code for code in requested if code in candidates]
+        if not base:
+            raise ValueError("area-codes must include a statistical area matching the supplied suburb")
+    else:
+        established = {"mairehau": ["321700", "323100"], "richmond": ["325900", "326800"]}
+        base = candidates
+        if not exact:
+            base = established.get(suburb_key, [])
+            if set(base) != set(candidates):
+                options = ", ".join(f"{areas[code][0]} ({code})" for code in candidates)
+                raise ValueError(f"confirm the statistical area grouping for {suburb}: {options}")
+    neighbours = list(dict.fromkeys(code for start in base for code in areas[start][1] if code not in base))
+    if set(requested) - set(base + neighbours):
+        raise ValueError("area-codes must match the suburb or its adjoining statistical areas")
+    codes = list(dict.fromkeys((requested or base) + (neighbours if include_adjoining else [])))
+    base_areas = [areas[code][0] for code in base]
+    label = base_areas[0].removesuffix(" (Christchurch City)") if len(base) == 1 else suburb.strip()
+    if len(base) > 1 and suburb_key in ("mairehau", "richmond") and not set(codes) - set(base):
+        label += " North + South"
+    if set(codes) - set(base):
+        label += " + adjoining areas"
+    return {"label": label, "base_areas": base_areas, "area_codes": ",".join(codes),
+            "area_labels": [areas[code][0] for code in codes],
+            "outside_christchurch_city": [areas[code][0] for code in codes if not areas[code][2]],
+            "address_matches": sorted(address_matches)}
+
+
+def main(argv=None) -> Path | None:
     parser = argparse.ArgumentParser(description=__doc__)
-    for flag in ["project-dir", "address", "suburb", "area-codes", "start-month", "end-month", "bedrooms"]:
-        parser.add_argument("--" + flag, required=True)
+    parser.add_argument("--suburb", required=True, help="Named suburb used to select the starting statistical area")
+    parser.add_argument("--lookup", action="store_true", help="Print the local market selection without calling the rent API")
+    parser.add_argument("--include-adjoining", action="store_true", help="Include areas sharing a boundary with the suburb")
+    parser.add_argument("--area-codes", help="Explicitly confirmed selection for an ambiguous suburb or custom neighbour list")
+    report_flags = ("project-dir", "address", "start-month", "end-month", "bedrooms")
+    for flag in report_flags:
+        parser.add_argument("--" + flag)
     parser.add_argument("--dwelling-type", choices=["House", "Flat", "Apartment", "BoardingHouse", "Room", "ALL"], default="House")
     args = parser.parse_args(argv)
+    try:
+        local = local_market(args.suburb, args.address or "", args.area_codes, args.include_adjoining)
+    except (ValueError, sqlite3.Error) as exc:
+        parser.error(str(exc))
+    if args.lookup:
+        print(json.dumps(local, ensure_ascii=False, indent=2))
+        return None
+    missing = [f"--{flag}" for flag in report_flags if not getattr(args, flag.replace("-", "_"))]
+    if missing:
+        parser.error("the following arguments are required for a report: " + ", ".join(missing))
     if args.bedrooms not in ["1", "2", "3", "4", "5", "5+", "ALL"]:
         parser.error("bedrooms must be 1, 2, 3, 4, 5, 5+ or ALL")
     try:
@@ -169,9 +273,7 @@ def main(argv=None) -> Path:
         parser.error("dates must use YYYY-MM")
     if start >= end or end > growth.shift(date.today().replace(day=1), -2):
         parser.error("baseline must precede end; end must be at least two calendar months behind the current month")
-    codes = args.area_codes.split(",")
-    if len(set(codes)) != len(codes) or not all(re.fullmatch(r"\d{6}", c) for c in codes):
-        parser.error("area-codes must be unique comma-separated SA2 2019 six-digit codes")
+
     key = os.environ.get("MBIE_MARKET_RENT_API_KEY")
     if not key:
         try:
@@ -187,24 +289,14 @@ def main(argv=None) -> Path:
     source = out / "source"
     source.mkdir(parents=True, exist_ok=True)
     evidence = []
-    definitions = growth.api_get(BASE, "area-definitions/SAU2019", key, source, evidence)
-    lookup = {r["code"]: r["label"] for r in definitions["items"]}
-    if not all(c in lookup for c in codes):
-        growth.fail("unknown SA2 code")
-    labels = [lookup[c] for c in codes]
-    city = growth.api_get(BASE, "area-definitions/TA2019", key, source, evidence)
-    if {"label": "Christchurch City", "code": "060"} not in city["items"]:
-        growth.fail("Christchurch City code could not be verified")
-    local_label = args.suburb
-    if len(labels) > 1 and all(label.startswith(args.suburb + " ") for label in labels):
-        local_label += " " + " + ".join(label[len(args.suburb) + 1:] for label in labels)
-    elif labels != [args.suburb]:
-        local_label = " + ".join(labels)
+    local_label, codes, labels = local["label"], local["area_codes"], local["area_labels"]
     markets = []
     count = (end.year - start.year) * 12 + end.month - start.month + 1
-    for label, definition, market_codes, market_labels in [(local_label, "SAU2019", args.area_codes, labels),
+    for label, definition, market_codes, market_labels in [(local_label, "SAU2019", codes, labels),
                                                            ("Christchurch City", "TA2019", "060", ["Christchurch City"])]:
         points = []
+        use_named_group = False
+        named_group = label.replace(" + ", " and ")
         for offset in range(count):
             month = growth.shift(start, offset)
             params = {
@@ -214,8 +306,15 @@ def main(argv=None) -> Path:
                 params["dwelling-type"] = args.dwelling_type
             if args.bedrooms != "ALL":
                 params["num-bedrooms"] = args.bedrooms
-            payload = growth.api_get(BASE, "statistics", key, source, evidence, **params)
-            point = annual_row(payload, definition, market_labels, month, args.dwelling_type, args.bedrooms)
+            if not use_named_group:
+                payload = growth.api_get(BASE, "statistics", key, source, evidence, **params)
+                try:
+                    point = annual_row(payload, definition, market_labels, month, args.dwelling_type, args.bedrooms)
+                except IncompleteAreaBreakdown:
+                    use_named_group = True
+            if use_named_group:
+                payload = named_group_statistics(params, named_group, key, source, evidence)
+                point = annual_row(payload, "USERDEFINED", [named_group], month, args.dwelling_type, args.bedrooms)
             point["request"] = evidence[-1]
             points.append(point)
             print(label, point["window_end"], f"${point['geometric_mean']:.2f}", flush=True)
@@ -225,11 +324,11 @@ def main(argv=None) -> Path:
     type_label = "all dwelling types" if args.dwelling_type == "ALL" else args.dwelling_type
     now = datetime.now().astimezone()
     summary = {"address": args.address, "suburb": args.suburb, "bedrooms": args.bedrooms, "dwelling_type": args.dwelling_type,
-               "area_labels": labels, "start_label": growth.label(start), "end_label": growth.label(end),
+               "area_labels": labels, "local_selection": local, "start_label": growth.label(start), "end_label": growth.label(end),
                "baseline_header": "Year to " + start.strftime("%b %Y"), "latest_header": "Year to " + end.strftime("%b %Y"),
                "scope_label": f"{bedroom_label} | {type_label} | {local_label} vs Christchurch City",
                "window_note": f"Equal 12-month windows: {growth.shift(start, -11):%b %Y}-{start:%b %Y} vs {growth.shift(end, -11):%b %Y}-{end:%b %Y}.",
-               "geography_note": f"Local: SA2 2019 {args.area_codes}. Christchurch City: TA 2019 060. Provisional bond data.",
+               "geography_note": f"Local: SA2 2019 {codes}. Christchurch City: TA 2019 060. Provisional bond data.",
                "retrieved_at": now.isoformat(), "retrieved_date": now.strftime("%d %B %Y"),
                "method": "Direct annual exp(lmean) and med; relative geometric change from selected baseline. Randomly rounded nLodged.",
                "requests": evidence, "markets": markets}
