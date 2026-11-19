@@ -69,6 +69,7 @@ def build(output: Path) -> None:
     if len({row[0] for row in rows}) != count:
         raise ValueError("LINZ query returned duplicate address IDs")
     rows.sort(key=lambda row: row[1])
+    output.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(dir=output.parent) as folder:
         draft = Path(folder) / "index.sqlite"
         with closing(sqlite3.connect(draft)) as db, db:

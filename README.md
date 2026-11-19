@@ -11,7 +11,7 @@ The bundled index joins Christchurch address records to the 2019 statistical are
 
 Both datasets are licensed under [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/).
 
-To refresh addresses, run `python skills/christchurch-rent-growth/scripts/build_lookup.py` with Shapely 2 installed. The script derives the SQLite area records and adjacency lists from the checked-in GeoJSON and replaces the index only after validating the rebuild.
+To refresh addresses, run `python skills/christchurch-rent-growth/scripts/build_lookup.py` with Shapely 2 installed and internet access to LINZ. The script derives the SQLite area records and adjacency lists from the checked-in GeoJSON and replaces the index only after validating the rebuild.
 
 ## Install
 
