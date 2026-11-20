@@ -9,17 +9,21 @@ Use the production MBIE / Tenancy Services Market Rent API. The default delivera
 
 ## Intake
 
-Establish from the user or conversation:
+Use the native question form for missing inputs (`request_user_input_async` in Codex Desktop). Send one batch with a separate field for each missing detail. Use selectors for fixed choices and text entry for addresses, dates and dollar amounts. Wait for submitted answers; a preselected option is not confirmation. If the host has no form, use one short labelled line per missing field.
 
-- Property address and the actual suburb supplied by the user.
-- Local scope. Start with the named suburb and include areas that share a boundary with it by default. Use suburb-only scope only when explicitly requested.
-- Confirm the bedroom count and dwelling type for the exact property from the user or a property-specific record. A unit number or a listing for a neighbouring unit cannot establish the API dwelling type. If the description leaves the category unclear (for example, Flat versus Apartment), ask the user before running the report. Pass the confirmed type explicitly for both markets and check that the PDF heading shows that type and bedroom count.
-- **When was the rent last set or increased, or what start date should the comparison use?** Ask at the start if not already known. Accept a user-selected comparison period instead.
-- End month. If unspecified, use the latest API-eligible month, two calendar months before the current local month, then validate returned coverage. If unavailable, disclose this and establish an available endpoint.
+Use details already supplied in the conversation or verified for the exact property. After a partial reply, ask only for the fields still needed. Keep methodology and repeated scope summaries out of intake.
 
-Bundle missing information into one short question: "When was the rent last increased, or what start month should we compare from? How many bedrooms does the property have?" Ask for the address/type too if needed; never ask again for supplied information. Ask for the current weekly rent in the same intake if it is missing and a dollar recommendation is wanted. A missing current rent does not block the report.
+| Field | Control and prompt |
+|---|---|
+| Address and suburb | Text: "What is the street address and suburb?" If only one is missing, ask for that part. |
+| Bedrooms | Selector: 1, 2, 3, 4, 5, 5+. Keep 5 and 5+ separate. |
+| Dwelling type | Selector: House / townhouse, Flat / bedsit, Apartment, Boarding house room, Room. Pass `House`, `Flat`, `Apartment`, `BoardingHouse`, or `Room` respectively. |
+| Comparison period | If missing, offer "Past 12 months" and "Since the last rent review". For the latter, ask for the review month if unknown. Accept a custom period or date directly. |
+| Current weekly rent | Text: "What is the current weekly rent (NZD)?" Ask when a dollar recommendation is wanted; the report can proceed without it. |
 
-Map an exact increase date to its calendar month. Explain the rolling baseline before running: January 2025 means the **12 months February 2024-January 2025**, not January alone. January 2025-August 2026 gives 20 rolling monthly points; the endpoint change is not an annual growth rate.
+Use `ALL` (All bedrooms or All dwelling types) for an explicitly requested aggregate comparison. For an ambiguous "unit", ask which dwelling category fits. A unit number or a neighbouring listing does not establish the type. Use the confirmed type for both markets and verify it appears with the bedroom count in the PDF heading. [Tenancy Services dwelling definitions](https://www.tenancy.govt.nz/rent-bond-and-bills/market-rent/market-rent-explained/)
+
+Default to the named suburb plus adjoining areas. For "past 12 months", compare the latest eligible end month with the same month a year earlier. The latest eligible month is two calendar months before the current local month; validate returned coverage. For a review date, use its calendar month as the rolling annual baseline. State the actual windows with the result.
 
 ## Geography
 
