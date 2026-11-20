@@ -13,7 +13,7 @@ Establish from the user or conversation:
 
 - Property address and the actual suburb supplied by the user.
 - Local scope. Start with the named suburb and include areas that share a boundary with it by default. Use suburb-only scope only when explicitly requested.
-- Bedroom count and dwelling type. Match the property; use House for a house in both markets. Ask about unclear types or state an appropriate assumption before proceeding.
+- Confirm the bedroom count and dwelling type for the exact property from the user or a property-specific record. A unit number or a listing for a neighbouring unit cannot establish the API dwelling type. If the description leaves the category unclear (for example, Flat versus Apartment), ask the user before running the report. Pass the confirmed type explicitly for both markets and check that the PDF heading shows that type and bedroom count.
 - **When was the rent last set or increased, or what start date should the comparison use?** Ask at the start if not already known. Accept a user-selected comparison period instead.
 - End month. If unspecified, use the latest API-eligible month, two calendar months before the current local month, then validate returned coverage. If unavailable, disclose this and establish an available endpoint.
 
@@ -81,16 +81,16 @@ Run the bundled report command for the requested span, inspect its PDF, and link
 
 ## Recommendation and landlord message
 
-Use the Christchurch City arithmetic means in `summary.json` for the selected bedroom count and dwelling type. Calculate the proposed weekly rent as `current weekly rent * latest city mean / baseline city mean`. Round to the nearest $5, with halfway amounts rounded up. Show the user both the unrounded amount and the rounded proposal.
+Use both markets' unrounded `arithmetic_change_pct` values from `summary.json` for the same bedroom count, dwelling type and dates. Give the selected local market and Christchurch City equal weight: `recommended change (%) = (local change (%) + city change (%)) / 2`. Apply that rate to the tenancy: `proposed weekly rent = current weekly rent * (1 + recommended change / 100)`. Round the resulting rent to the nearest $5, with halfway amounts rounded up. Show the two observed rates, the blended recommendation rate, and the unrounded and rounded rent.
 
-If current rent is missing, deliver the PDF and ask for the current weekly rent. If city growth is zero or negative, or rounding produces no increase, explain the result and omit the increase message.
+If current rent is missing, deliver the PDF and blended rate and ask for the current weekly rent before quoting a dollar proposal. If the blended rate is zero or negative, or rounding produces no increase, explain the result and omit the increase message.
 
 For an increase, fill in the landlord message below with the property category and comparison dates. Present it in a copyable text block. Keep the rounding explanation outside the message.
 
 ```text
 We've carried out a rent review for [address], based on MBIE bond lodgement data. We'd recommend increasing the rent from $[current] to $[proposed] per week.
 
-Average rents for [matching property category] across Christchurch City rose around [city change to one decimal]% between [baseline] and [latest] (see attached report).
+Between [baseline] and [latest], average rents for [bedroom count and dwelling type] changed by [signed local change]% in [local market] and [signed city change]% across Christchurch City. Giving both figures equal weight suggests an adjustment of [blended change]% (see attached report).
 
 Please let me know your thoughts, and we'll send the required rent increase notice to the tenants once confirmed.
 ```

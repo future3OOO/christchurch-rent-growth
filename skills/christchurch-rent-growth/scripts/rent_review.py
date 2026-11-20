@@ -320,7 +320,7 @@ def main(argv=None) -> Path | None:
     report_flags = ("project-dir", "address", "start-month", "end-month", "bedrooms")
     for flag in report_flags:
         parser.add_argument("--" + flag)
-    parser.add_argument("--dwelling-type", choices=["House", "Flat", "Apartment", "BoardingHouse", "Room", "ALL"], default="House")
+    parser.add_argument("--dwelling-type", choices=["House", "Flat", "Apartment", "BoardingHouse", "Room", "ALL"])
     args = parser.parse_args(argv)
     try:
         local = local_market(args.suburb, args.address or "", args.area_codes, args.include_adjoining)
@@ -329,7 +329,7 @@ def main(argv=None) -> Path | None:
     if args.lookup:
         print(json.dumps(local, indent=2))
         return None
-    missing = [f"--{flag}" for flag in report_flags if not getattr(args, flag.replace("-", "_"))]
+    missing = [f"--{flag}" for flag in (*report_flags, "dwelling-type") if not getattr(args, flag.replace("-", "_"))]
     if missing:
         parser.error("the following arguments are required for a report: " + ", ".join(missing))
     if args.bedrooms not in ["1", "2", "3", "4", "5", "5+", "ALL"]:

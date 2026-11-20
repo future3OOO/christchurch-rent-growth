@@ -20,6 +20,14 @@ class RentReviewTests(unittest.TestCase):
     group_labels = ["Burwood", "Otakaro-Avon River Corridor", "Travis Wetlands", "Prestons", "Shirley East"]
     group_name = "Burwood and adjoining areas"
 
+    def test_report_requires_an_explicit_dwelling_type(self):
+        with tempfile.TemporaryDirectory() as project, patch("urllib.request.urlopen") as network:
+            with self.assertRaises(SystemExit) as error:
+                rent_review.main(["--project-dir", project, "--address", "Unit 2", "--suburb", "Burwood",
+                                  "--bedrooms", "2", "--start-month", "2025-01", "--end-month", "2025-02"])
+            self.assertEqual(error.exception.code, 2)
+            network.assert_not_called()
+
     def test_offline_lookup_runs_without_matplotlib(self):
         result = subprocess.run([sys.executable, "-E", "-S", rent_review.__file__, "--lookup",
                                  "--suburb", "Burwood"], capture_output=True, text=True)
