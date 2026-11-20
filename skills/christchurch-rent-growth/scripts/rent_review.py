@@ -176,6 +176,11 @@ def render(summary: dict, out: Path) -> Path:
         for side in ["top", "right", "left"]:
             ax.spines[side].set_visible(False)
         ax.spines["bottom"].set_color("#d3dbd4")
+    local = summary["markets"][0]["points"]
+    before, after = local[0]["lodged_bonds"], local[-1]["lodged_bonds"]
+    if min(before, after) < 20:
+        fig.text(.075, .111, f"Small local sample: {before} and {after} reported bonds. A few lettings can materially change the average.",
+                 fontsize=9.5, color=ink)
     fig.text(.075, .094, "Reading the comparison", fontsize=10.5, weight="bold", color=ink)
     fig.text(.075, .080, "Each point is the average weekly rent on matching new bonds over the full 12-month window.\n"
              "The baseline is a full year ending in the selected start month, not a single-month rent.\n"
@@ -210,6 +215,8 @@ def annual_row(payload: dict, definition: str, labels: list, end: date, dwelling
     expected = set(labels)
     if definition == "SAU2019" and len(expected) > 1 and returned < expected:
         raise IncompleteAreaBreakdown()
+    if not items:
+        fail(f"No published aggregate for {', '.join(labels)}, {dwelling}, {bedrooms} bedrooms, window ending {iso(end)}")
     if returned != expected:
         fail("API returned missing or unexpected named areas")
     area = "ALL" if len(labels) > 1 else labels[0]

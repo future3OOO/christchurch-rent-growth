@@ -16,7 +16,7 @@ Use details already supplied in the conversation or verified for the exact prope
 | Field | Control and prompt |
 |---|---|
 | Address and suburb | Text: "What is the street address and suburb?" If only one is missing, ask for that part. |
-| Bedrooms | Selector: 1, 2, 3, 4, 5, 5+. Keep 5 and 5+ separate. |
+| Bedrooms | Selector: 1, 2, 3, 4, 5, 5+, All bedrooms. Confirm an aggregate selection for a specific property. Keep 5 and 5+ separate. |
 | Dwelling type | Selector: House / townhouse, Flat / bedsit, Apartment, Boarding house room, Room. Pass `House`, `Flat`, `Apartment`, `BoardingHouse`, or `Room` respectively. |
 | Comparison period | If missing, offer "Past 12 months" and "Since the last rent review". For the latter, ask for the review month if unknown. Accept a custom period or date directly. |
 | Current weekly rent | Text: "What is the current weekly rent (NZD)?" Ask when a dollar recommendation is wanted; the report can proceed without it. |
@@ -24,6 +24,10 @@ Use details already supplied in the conversation or verified for the exact prope
 Use `ALL` (All bedrooms or All dwelling types) for an explicitly requested aggregate comparison. For an ambiguous "unit", ask which dwelling category fits. A unit number or a neighbouring listing does not establish the type. Use the confirmed type for both markets and verify it appears with the bedroom count in the PDF heading. [Tenancy Services dwelling definitions](https://www.tenancy.govt.nz/rent-bond-and-bills/market-rent/market-rent-explained/)
 
 Default to the named suburb plus adjoining areas. For "past 12 months", compare the latest eligible end month with the same month a year earlier. The latest eligible month is two calendar months before the current local month; validate returned coverage. For a review date, use its calendar month as the rolling annual baseline. State the actual windows with the result.
+
+For a latest-available request, if a validated response contains no published aggregate for the requested end month, rerun for the preceding month. Continue back to the latest complete comparison for both markets, keeping the same filters. Move both ends together for a rolling horizon; retain an explicit review-date baseline. Report the originally sought and actual dates. Keep explicit fixed dates unless the user agrees to a change. Handle network errors, wrong geography and invalid responses separately from unpublished data.
+
+If either local endpoint has fewer than 20 reported bonds, give both counts and flag how sensitive the average is to a few lettings. This is a reporting caution, not an MBIE suppression threshold. Deliver the matched-category comparison when available. Use the native selector to offer keeping it alone, adding another bedroom count (1, 2, 3, 4, 5 or 5+), or adding the direct all-bedroom aggregate. Accept several counts in free text. Produce separate labelled comparisons for chosen counts using the same dates, dwelling type and catchment; never pool their published means. Keep the property-matched recommendation as the primary benchmark.
 
 ## Geography
 
