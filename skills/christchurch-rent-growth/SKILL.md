@@ -17,7 +17,7 @@ Establish from the user or conversation:
 - **When was the rent last set or increased, or what start date should the comparison use?** Ask at the start if not already known. Accept a user-selected comparison period instead.
 - End month. If unspecified, use the latest API-eligible month, two calendar months before the current local month, then validate returned coverage. If unavailable, disclose this and establish an available endpoint.
 
-Bundle missing information into one short question: "When was the rent last increased, or what start month should we compare from? How many bedrooms does the property have?" Ask for the address/type too if needed; never ask again for supplied information. Current weekly rent is needed only for a dollar recommendation.
+Bundle missing information into one short question: "When was the rent last increased, or what start month should we compare from? How many bedrooms does the property have?" Ask for the address/type too if needed; never ask again for supplied information. Ask for the current weekly rent in the same intake if it is missing and a dollar recommendation is wanted. A missing current rent does not block the report.
 
 Map an exact increase date to its calendar month. Explain the rolling baseline before running: January 2025 means the **12 months February 2024-January 2025**, not January alone. January 2025-August 2026 gives 20 rolling monthly points; the endpoint change is not an annual growth rate.
 
@@ -77,11 +77,23 @@ Tenancy Services acknowledges inaccurate bedroom counts among some one-bedroom r
 
 ## Standard PDF
 
-Use the template in `scripts/rent_review.py`. Render and inspect the final PDF for the area scope, dates, charts, endpoint table, bond lodgements, and footer. Deliver the PDF and concise benchmark findings. When asked only for figures, answer without creating a report.
+Run the bundled report command for the requested span, inspect its PDF, and link it in the final answer with the findings. This includes requests to calculate rent change for a property. Give figures alone only if explicitly requested. If the runner fails, retry a transient API error; if it still fails, identify the unavailable window. Never rebuild the report by passing a shortened series to the renderer.
 
-## Owner message, when requested
+## Recommendation and landlord message
 
-State the bedroom count and dwelling type explicitly. Explain change in the average weekly rent and the median cross-check as different measures, not an arbitrary range of possible increases. Do not claim arithmetic means are inherently superior. A modest/flat local trend supports only a cautious recommendation, assessed with supplied comparables and tenant retention. Do not invent a recommended dollar rent without necessary inputs. Mention any recommendation once and avoid a repetitive closing summary.
+Use the existing report figures. The original recommendation applied the overall Christchurch City percentage to the current weekly rent. This report's city comparison covers the selected bedrooms and dwelling type. Identify that category and the exact comparison dates in the message. Use the unrounded change from the city market in `summary.json`. The local-market result remains available alongside it in the report.
+
+When current weekly rent is supplied, multiply it by the ratio of the latest to baseline Christchurch City arithmetic means. Round the resulting weekly rent to the nearest $5, with halfway amounts rounded up. Tell the user the unrounded figure and the rounded proposal. If city growth is zero or negative, or rounding produces no increase, say so and omit the increase message. If the current rent is missing, link the report and ask for it before quoting a proposed rent.
+
+Finish with an example landlord message in a copyable text block. Keep the rounding explanation outside the message. Adapt the original wording to the figures and period:
+
+```text
+We've carried out a rent review for [address], based on MBIE bond lodgement data. We'd recommend increasing the rent from $[current] to $[proposed] per week.
+
+Average rents for [matching property category] across Christchurch City rose around [city change to one decimal]% between [baseline] and [latest] (see attached report).
+
+Please let me know your thoughts, and we'll send the required rent increase notice to the tenants once confirmed.
+```
 
 ## Verification
 
