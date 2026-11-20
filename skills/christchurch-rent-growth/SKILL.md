@@ -81,11 +81,11 @@ Run the bundled report command for the requested span, inspect its PDF, and link
 
 ## Recommendation and landlord message
 
-Use the existing report figures. The original recommendation applied the overall Christchurch City percentage to the current weekly rent. This report's city comparison covers the selected bedrooms and dwelling type. Identify that category and the exact comparison dates in the message. Use the unrounded change from the city market in `summary.json`. The local-market result remains available alongside it in the report.
+Use the Christchurch City arithmetic means in `summary.json` for the selected bedroom count and dwelling type. Calculate the proposed weekly rent as `current weekly rent × latest city mean ÷ baseline city mean`. Round to the nearest $5, with halfway amounts rounded up. Show the user both the unrounded amount and the rounded proposal.
 
-When current weekly rent is supplied, multiply it by the ratio of the latest to baseline Christchurch City arithmetic means. Round the resulting weekly rent to the nearest $5, with halfway amounts rounded up. Tell the user the unrounded figure and the rounded proposal. If city growth is zero or negative, or rounding produces no increase, say so and omit the increase message. If the current rent is missing, link the report and ask for it before quoting a proposed rent.
+If current rent is missing, deliver the PDF and ask for the current weekly rent. If city growth is zero or negative, or rounding produces no increase, explain the result and omit the increase message.
 
-Finish with an example landlord message in a copyable text block. Keep the rounding explanation outside the message. Adapt the original wording to the figures and period:
+For an increase, fill in the landlord message below with the property category and comparison dates. Present it in a copyable text block. Keep the rounding explanation outside the message.
 
 ```text
 We've carried out a rent review for [address], based on MBIE bond lodgement data. We'd recommend increasing the rent from $[current] to $[proposed] per week.
