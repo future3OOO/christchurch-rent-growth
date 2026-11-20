@@ -80,7 +80,7 @@ class RentReviewTests(unittest.TestCase):
             label = "Burwood" if codes == "325600" else "ALL" if local else "Christchurch City"
         row = {"area": label, "dwell": "House", "nBedrms": "3",
                "lmean": math.log(660 if latest else 600), "med": 650 if latest else 620,
-               "mean": 999, "nLodged": 57 if latest else 69}
+               "mean": 675 if latest else 625, "nLodged": 57 if latest else 69}
         items = [row]
         if definition == "SAU2019" and codes == self.group_codes:
             names = self.group_labels.copy()
@@ -114,11 +114,12 @@ class RentReviewTests(unittest.TestCase):
             self.assertTrue((output / "rent_review.png").is_file())
             return json.loads((output / "summary.json").read_text())
 
-    def test_full_report_uses_direct_annual_medians_and_geometric_baseline(self):
+    def test_full_report_uses_direct_annual_medians_and_arithmetic_baseline(self):
         self.failure = None
         for market in self.report_summary()["markets"]:
             self.assertEqual(len(market["points"]), 2)
-            self.assertAlmostEqual(market["geometric_change_pct"], 10)
+            self.assertEqual([p["arithmetic_mean"] for p in market["points"]], [625, 675])
+            self.assertAlmostEqual(market["arithmetic_change_pct"], 8)
             self.assertEqual(market["points"][0]["median"], 620)
             self.assertEqual(market["points"][1]["median"], 650)
             self.assertEqual(market["points"][0]["window_start"], "2024-02")

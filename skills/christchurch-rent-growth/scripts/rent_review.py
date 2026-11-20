@@ -97,8 +97,8 @@ def render(summary: dict, out: Path) -> Path:
     table_rows = [["Area / measure", summary["baseline_header"], summary["latest_header"], "Change"]]
     for market, color, left in zip(summary["markets"], colors, [.075, .52]):
         points = market["points"]
-        values = [p["geometric_mean"] for p in points]
-        rates = [percent_change(v, values[0]) for v in values[:-1]] + [market["geometric_change_pct"]]
+        values = [p["arithmetic_mean"] for p in points]
+        rates = [percent_change(v, values[0]) for v in values[:-1]] + [market["arithmetic_change_pct"]]
         fig.text(left, .865, market["label"], fontsize=12, color=color, weight="bold")
         fig.text(left, .838, f"${values[-1]:.2f}/week", fontsize=21, color=ink, weight="bold")
         fig.text(left, .817, f"{rates[-1]:+.1f}% change from {summary['start_label']}", fontsize=10.5, color=muted)
@@ -106,12 +106,12 @@ def render(summary: dict, out: Path) -> Path:
             ax.plot(range(len(data)), data, color=color, lw=2.3, marker="o", ms=3.5)
             ax.annotate(endpoint, (len(data) - 1, data[-1]), xytext=(10, 0), textcoords="offset points",
                         color=color, weight="bold", va="center", annotation_clip=False)
-        for field, label, precision in [("geometric_mean", "geometric mean", 2), ("median", "median", 0)]:
+        for field, label, precision in [("arithmetic_mean", "arithmetic mean", 2), ("median", "median", 0)]:
             first, last = points[0][field], points[-1][field]
-            change = rates[-1] if field == "geometric_mean" else percent_change(last, first)
+            change = rates[-1] if field == "arithmetic_mean" else percent_change(last, first)
             table_rows.append([f"{market['label']} | {label}", f"${first:.{precision}f}",
                                f"${last:.{precision}f}", f"{change:+.1f}%"])
-    levels.set_ylabel("Geometric mean weekly rent", color=muted, labelpad=12)
+    levels.set_ylabel("Arithmetic mean weekly rent", color=muted, labelpad=12)
     levels.yaxis.set_major_formatter(StrMethodFormatter("${x:,.0f}"))
     levels.tick_params(axis="x", labelbottom=False, length=0)
     levels.margins(y=.18)
@@ -125,7 +125,7 @@ def render(summary: dict, out: Path) -> Path:
               else dates[i].strftime("%b") for n, i in enumerate(ticks)]
     changes.set_xticks(ticks, labels)
     changes.set_xlabel("End month of each rolling 12-month window", fontsize=10, color=muted, labelpad=10)
-    fig.text(.095, .592, f"Change relative to the rolling 12-month geometric mean ending {summary['start_label']}", fontsize=10, color=muted)
+    fig.text(.095, .592, f"Change relative to the rolling 12-month arithmetic mean ending {summary['start_label']}", fontsize=10, color=muted)
     fig.add_artist(plt.Line2D([.075, .93], [.425, .425], transform=fig.transFigure, color="#dce2dc", lw=1))
     fig.text(.075, .400, "Change from the selected baseline", fontsize=16, weight="bold", color=ink)
     fig.text(.075, .379, summary["window_note"], fontsize=9.5, color=muted)
@@ -168,7 +168,7 @@ def render(summary: dict, out: Path) -> Path:
             ax.spines[side].set_visible(False)
         ax.spines["bottom"].set_color("#d3dbd4")
     fig.text(.075, .094, "Reading the comparison", fontsize=10.5, weight="bold", color=ink)
-    fig.text(.075, .080, "Each point is exp(lmean) from a direct 12-month API aggregate for the selected property category.\n"
+    fig.text(.075, .080, "Each point is the average weekly rent on matching new bonds over the full 12-month window.\n"
              "The baseline is a full year ending in the selected start month, not a single-month rent.\n"
              "Medians are direct annual API values. Changes can reflect the property mix, not increases on the same homes.",
              va="top", fontsize=9, color=muted, linespacing=1.55)
@@ -210,16 +210,12 @@ def annual_row(payload: dict, definition: str, labels: list, end: date, dwelling
     row = rows[0]
     if type(row.get("nLodged")) is not int or row["nLodged"] <= 0:
         fail("missing or suppressed bond count")
-    if any(type(row.get(k)) not in (int, float) or not math.isfinite(row[k]) for k in ["lmean", "med"]):
-        fail("missing or invalid annual log mean or median")
-    try:
-        geometric = math.exp(row["lmean"])
-    except OverflowError:
-        fail("invalid geometric mean")
-    if geometric <= 0 or row["med"] <= 0:
-        fail("rent statistics must be positive")
-    return {"window_start": iso(start), "window_end": iso(end), "lmean": row["lmean"],
-            "geometric_mean": geometric, "median": row["med"], "lodged_bonds": row["nLodged"]}
+    if any(type(row.get(k)) not in (int, float) or not math.isfinite(row[k]) for k in ["mean", "med"]):
+        fail("missing or invalid annual arithmetic mean or median")
+    if row["mean"] <= 0 or row["med"] <= 0:
+        fail("non-positive annual rent")
+    return {"window_start": iso(start), "window_end": iso(end), "arithmetic_mean": row["mean"],
+            "median": row["med"], "lodged_bonds": row["nLodged"]}
 
 
 def named_group_statistics(params: dict, name: str, key: str, source: Path, evidence: list) -> dict:
@@ -389,9 +385,9 @@ def main(argv=None) -> Path | None:
                 point = annual_row(payload, "USERDEFINED", [named_group], month, args.dwelling_type, args.bedrooms)
             point["request"] = evidence[-1]
             points.append(point)
-            print(label, point["window_end"], f"${point['geometric_mean']:.2f}", flush=True)
+            print(label, point["window_end"], f"${point['arithmetic_mean']:.2f}", flush=True)
         markets.append({"label": label, "definition": definition, "codes": market_codes, "points": points,
-                        "geometric_change_pct": percent_change(points[-1]["geometric_mean"], points[0]["geometric_mean"])})
+                        "arithmetic_change_pct": percent_change(points[-1]["arithmetic_mean"], points[0]["arithmetic_mean"])})
     bedroom_label = "All bedrooms" if args.bedrooms == "ALL" else args.bedrooms + "-bedroom"
     type_label = "all dwelling types" if args.dwelling_type == "ALL" else args.dwelling_type
     now = datetime.now().astimezone()
@@ -402,15 +398,15 @@ def main(argv=None) -> Path | None:
                "window_note": f"Equal 12-month windows: {shift(start, -11):%b %Y}-{start:%b %Y} vs {shift(end, -11):%b %Y}-{end:%b %Y}.",
                "geography_note": f"Local: SA2 2019 {codes}. Christchurch City: TA 2019 060. Provisional bond data.",
                "retrieved_at": now.isoformat(), "retrieved_date": now.strftime("%d %B %Y"),
-               "method": "Direct annual exp(lmean) and med; relative geometric change from selected baseline. Randomly rounded nLodged.",
+               "method": "Direct annual arithmetic mean and median. Change from the selected baseline. Randomly rounded nLodged.",
                "requests": evidence, "markets": markets}
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     with (out / "rolling_comparison.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
-        writer.writerow(["market", "window_start", "window_end", "geometric_mean", "median", "lodged_bonds"])
+        writer.writerow(["market", "window_start", "window_end", "arithmetic_mean", "median", "lodged_bonds"])
         for market in markets:
             for p in market["points"]:
-                writer.writerow([market["label"]] + [p[k] for k in ["window_start", "window_end", "geometric_mean", "median", "lodged_bonds"]])
+                writer.writerow([market["label"]] + [p[k] for k in ["window_start", "window_end", "arithmetic_mean", "median", "lodged_bonds"]])
     print(render(summary, out))
     return out
 

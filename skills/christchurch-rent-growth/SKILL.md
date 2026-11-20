@@ -1,6 +1,6 @@
 ---
 name: christchurch-rent-growth
-description: Create bedroom-specific property rental reports comparing a named suburb plus adjoining areas with Christchurch City using Tenancy Services bond data, rolling geometric means, annual medians and bond lodgements since a chosen rent-review date.
+description: Create bedroom-specific property rental reports comparing a named suburb plus adjoining areas with Christchurch City using Tenancy Services bond data, rolling arithmetic means, annual medians and bond lodgements since a chosen rent-review date.
 ---
 
 # Property rent review and bond report
@@ -36,7 +36,7 @@ The bundled [Christchurch address and rent-area index](references/christchurch-a
 - The bundled [2019 SA2 boundaries and neighbours](references/christchurch-sa2-2019.geojson) support map verification and list shared boundary lengths. The address index is a snapshot of LINZ address data. Confirm unresolved address or suburb discrepancies with the user. The selected market stays anchored to the supplied suburb.
 - Christchurch City is TA2019 060. Name the actual combined areas in the summary and use a short local label in the standard PDF.
 
-The website market-rent tool uses NZAD suburb regions. Before treating a website/API difference as an error, match geography, dates, bedrooms, dwelling type, measure and bond population. Website medians are not geometric means. Do not assume its bond count means API nLodged or nCurr. An unresolved-boundary warning is not required on the report; label the actual selected areas accurately.
+The website market-rent tool uses NZAD suburb regions. Before treating a website/API difference as an error, match geography, dates, bedrooms, dwelling type, measure and bond population. Website medians are not arithmetic means. Do not assume its bond count means API nLodged or nCurr. An unresolved-boundary warning is not required on the report; label the actual selected areas accurately.
 
 ## API and configuration
 
@@ -63,15 +63,15 @@ Outputs: `<project>/outputs/<address>_<dwelling>_<bedrooms>_<start>_to_<end>_sa2
 
 ## Calculation contract
 
-- **Primary rent measure:** exp(lmean) from a direct API aggregate for each complete 12-month window.
-- **Rolling growth:** (G_window / G_baseline - 1) * 100. Keep the selected baseline throughout any user-selected horizon.
+- **Primary rent measure:** the arithmetic mean (API field `mean`) from a direct API aggregate for each complete 12-month window.
+- **Rolling growth:** (mean_window / mean_baseline - 1) * 100. Keep the selected baseline throughout any user-selected horizon.
 - **Median cross-check:** direct API med for that same complete annual window and property selection. Use the combined API row for grouped local areas. Never average monthly or individual-area medians.
-- **Endpoint table:** baseline and latest geometric means and medians, each with its own percentage change. State exact window dates. Do not switch to arithmetic averages in subsequent explanation.
+- **Endpoint table:** baseline and latest arithmetic means and medians, each with its own percentage change. State exact window dates.
 - **Bonds:** direct annual nLodged, not nCurr (active bonds at endpoint). Counts are randomly rounded; totals can differ from summed cells. Label bars "Year to [month/year]" and give the full annual windows. These are not cumulative lodgements since the rent increase or counts of tenants receiving increases.
 
 Do not reconstruct annual or grouped means from rounded counts when a direct aggregate exists. Excluding one-bedroom labels from an otherwise all-bedroom analysis is a separate approximate analysis: the API's bedroom filter does not necessarily recompute the ALL subtotal. Disclose reconstruction and aggregate inconsistencies; never silently use these estimates in the standard report. Unknown-bedroom records are not known two-plus-bedroom properties.
 
-Geometric means support proportional comparisons and reduce influence from unusually high rents relative to arithmetic means. They do not fix invalid records, hold property mix constant or measure increases on the same homes. Medians provide a cross-check; neither measure is inherently more accurate in every sample.
+Each bond contributes equally to the annual arithmetic mean. Unusually high or low rents and changes in the mix of properties can move it. Use the direct annual median as a cross-check.
 
 Tenancy Services acknowledges inaccurate bedroom counts among some one-bedroom records, affecting counts and rents. When that category is included, identify its relevance without asserting an unproven cause or silently dropping records. Exclusion does not repair mislabelled larger homes. Provisional data/reclassification may affect remaining groups too.
 
@@ -81,7 +81,7 @@ Use the template in `scripts/rent_review.py`. Render and inspect the final PDF f
 
 ## Owner message, when requested
 
-State the bedroom count and dwelling type explicitly. Explain geometric growth and the median cross-check as different measures, not an arbitrary range of possible increases. Do not claim geometric means are inherently superior. A modest/flat local trend supports only a cautious recommendation, assessed with supplied comparables and tenant retention. Do not invent a recommended dollar rent without necessary inputs. Mention any recommendation once and avoid a repetitive closing summary.
+State the bedroom count and dwelling type explicitly. Explain change in the average weekly rent and the median cross-check as different measures, not an arbitrary range of possible increases. Do not claim arithmetic means are inherently superior. A modest/flat local trend supports only a cautious recommendation, assessed with supplied comparables and tenant retention. Do not invent a recommended dollar rent without necessary inputs. Mention any recommendation once and avoid a repetitive closing summary.
 
 ## Verification
 
