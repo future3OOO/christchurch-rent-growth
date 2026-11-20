@@ -51,7 +51,7 @@ The runner looks up codes locally and queries both markets sequentially in 12-mo
 
 ## Run
 
-Use Python 3.10 or newer. Offline lookup uses SQLite. Reports also require Matplotlib and a Market Rent API key.
+Use Python 3.10 or newer. Offline lookup uses SQLite. Reports also require Matplotlib and a Market Rent API key. If uv is available, try the report command below with `uv run --offline --with matplotlib python` in place of `"<python>"`. This reuses cached packages. Otherwise select an existing Python that can import Matplotlib before installing anything. The runner writes both the PDF and its PNG preview.
 
 ```text
 "<python>" "<skill-dir>/scripts/rent_review.py" --project-dir "<project>" --address "90 Aylesford Street, Mairehau, Christchurch 8013" --suburb "Mairehau" --bedrooms 3 --dwelling-type House --start-month 2025-01 --end-month 2026-08
