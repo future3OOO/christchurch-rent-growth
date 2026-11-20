@@ -77,7 +77,7 @@ Tenancy Services acknowledges inaccurate bedroom counts among some one-bedroom r
 
 ## Standard PDF
 
-Run the bundled report command for the requested span, inspect its PDF, and link it in the final answer with the findings. This includes requests to calculate rent change for a property. Give figures alone only if explicitly requested. If the runner fails, retry a transient API error; if it still fails, identify the unavailable window. Never rebuild the report by passing a shortened series to the renderer.
+Run the bundled report command for the requested span, inspect its PDF, and link it in the final answer with the findings. This includes requests to calculate rent change for a property. Give figures alone only if explicitly requested. The runner retries temporary server or connection failures on the affected request. If it stops, report the failed window and error. Never rebuild the report by passing a shortened series to the renderer.
 
 ## Recommendation and landlord message
 

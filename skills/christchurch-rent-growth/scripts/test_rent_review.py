@@ -157,6 +157,35 @@ class RentReviewTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "report already exists"):
                 self.run_report(project)
 
+    def test_transient_server_failure_retries_only_the_failed_window(self):
+        self.failure = None
+        original = self.response
+        calls = []
+        def interrupted(request, timeout):
+            calls.append(request.full_url)
+            if len(calls) == 2:
+                raise HTTPError(request.full_url, 500, "Internal Server Error", None, None)
+            return original(request, timeout)
+
+        with patch.object(self, "response", interrupted):
+            summary = self.report_summary()
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(calls[1], calls[2])
+        self.assertEqual(len(set(calls)), 4)
+        self.assertEqual(len(summary["requests"]), 4)
+
+    def test_persistent_server_error_names_period_and_writes_no_report(self):
+        calls = []
+        def unavailable(request, timeout):
+            calls.append(request.full_url)
+            raise HTTPError(request.full_url, 503, "Service Unavailable", None, None)
+
+        with tempfile.TemporaryDirectory() as project, patch.object(self, "response", unavailable):
+            with self.assertRaisesRegex(SystemExit, "2025-01.*503"):
+                self.run_report(project)
+            self.assertEqual(len(calls), 2)
+            self.assertFalse(list(Path(project).rglob("*.pdf")))
+
     def test_invalid_or_unavailable_aggregate_cannot_produce_a_report(self):
         for failure in ("wrong-bedroom", "wrong-period", "named-unavailable", "invalid-named"):
             self.failure = failure

@@ -9,12 +9,13 @@ import os
 import re
 import sqlite3
 import sys
+import time
 import unicodedata
 import urllib.request
 from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 
 if sys.version_info < (3, 10):
@@ -48,11 +49,19 @@ def api_get(base: str, path: str, key: str, source: Path, evidence: list, **para
     url = base + path + ("?" + urlencode(params) if params else "")
     request = urllib.request.Request(url, headers={"Ocp-Apim-Subscription-Key": key,
                                                   "Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(request, timeout=130) as response:
-            raw = response.read()
-    except OSError as exc:
-        fail("Market Rent API request failed: " + str(exc))
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(request, timeout=130) as response:
+                raw = response.read()
+            break
+        except OSError as exc:
+            reason = exc.reason if isinstance(exc, URLError) else exc
+            transient = (isinstance(exc, HTTPError) and exc.code in (500, 502, 503, 504)
+                         or isinstance(reason, (TimeoutError, ConnectionError)))
+            if attempt or not transient:
+                fail(f"Market Rent API request failed for {params['area-definition']} "
+                     f"window ending {params['period-ending']}: {exc}")
+            time.sleep(1)
     saved = source / ("%03d.json" % (len(evidence) + 1))
     saved.write_bytes(raw)
     evidence.append({"url": url, "response_file": str(saved),
