@@ -269,6 +269,8 @@ def local_market(suburb: str, address: str, area_codes: str | None, include_adjo
     if not candidates:
         raise ValueError(f"no statistical area matches {suburb!r}; confirm the intended suburb area by name")
     requested = area_codes.split(",") if area_codes else []
+    established = {"mairehau": ["321700", "323100"], "richmond": ["325900", "326800"],
+                   "somerfield": ["329100", "329200"]}
     if requested:
         if len(set(requested)) != len(requested) or any(code not in areas for code in requested):
             raise ValueError("area-codes must be unique known SA2 2019 codes")
@@ -276,7 +278,6 @@ def local_market(suburb: str, address: str, area_codes: str | None, include_adjo
         if not base:
             raise ValueError("area-codes must include a statistical area matching the supplied suburb")
     else:
-        established = {"mairehau": ["321700", "323100"], "richmond": ["325900", "326800"]}
         base = candidates
         if not exact:
             base = established.get(suburb_key, [])
@@ -289,8 +290,9 @@ def local_market(suburb: str, address: str, area_codes: str | None, include_adjo
     codes = list(dict.fromkeys((requested or base) + (neighbours if include_adjoining else [])))
     base_areas = [areas[code][0] for code in base]
     label = base_areas[0].removesuffix(" (Christchurch City)") if len(base) == 1 else suburb.strip()
-    if len(base) > 1 and suburb_key in ("mairehau", "richmond") and not set(codes) - set(base):
-        label += " North + South"
+    if len(base) > 1 and suburb_key in established and not set(codes) - set(base):
+        directions = [name.removesuffix(" (Christchurch City)").rsplit(" ", 1)[-1] for name in base_areas]
+        label += " " + " + ".join(directions)
     if set(codes) - set(base):
         label += " + adjoining areas"
     address_suburbs = sorted({name for _, name in address_rows if name})
@@ -307,7 +309,8 @@ def main(argv=None) -> Path | None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suburb", required=True, help="Named suburb used to select the starting statistical area")
     parser.add_argument("--lookup", action="store_true", help="Print the local market selection without calling the rent API")
-    parser.add_argument("--include-adjoining", action="store_true", help="Include areas sharing a boundary with the suburb")
+    parser.add_argument("--include-adjoining", action=argparse.BooleanOptionalAction, default=True,
+                        help="Include areas sharing a boundary with the suburb (default: included)")
     parser.add_argument("--area-codes", help="Explicitly confirmed selection for an ambiguous suburb or custom neighbour list")
     report_flags = ("project-dir", "address", "start-month", "end-month", "bedrooms")
     for flag in report_flags:

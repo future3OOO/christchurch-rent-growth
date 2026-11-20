@@ -1,18 +1,18 @@
 ---
 name: christchurch-rent-growth
-description: Create bedroom-specific property rental reports comparing a named suburb or the suburb plus adjoining areas with Christchurch City using Tenancy Services bond data, rolling geometric means, annual medians and bond lodgements since a chosen rent-review date.
+description: Create bedroom-specific property rental reports comparing a named suburb plus adjoining areas with Christchurch City using Tenancy Services bond data, rolling geometric means, annual medians and bond lodgements since a chosen rent-review date.
 ---
 
 # Property rent review and bond report
 
-Use the production MBIE / Tenancy Services Market Rent API. The default deliverable is a branded PDF comparing the property's local market with Christchurch City for the **same bedrooms, dwelling type and dates**. Run `scripts/rent_review.py`; do not rewrite the workflow in each chat.
+Use the production MBIE / Tenancy Services Market Rent API. The default deliverable is a branded PDF comparing the named suburb and its adjoining statistical areas with Christchurch City for the **same bedrooms, dwelling type and dates**. Run `scripts/rent_review.py`; do not rewrite the workflow in each chat.
 
 ## Intake
 
 Establish from the user or conversation:
 
 - Property address and the actual suburb supplied by the user.
-- Local scope. Use the named suburb alone by default. Include its adjoining areas when requested. Compare either local scope with Christchurch City.
+- Local scope. Start with the named suburb and include areas that share a boundary with it by default. Use suburb-only scope only when explicitly requested.
 - Bedroom count and dwelling type. Match the property; use House for a house in both markets. Ask about unclear types or state an appropriate assumption before proceeding.
 - **When was the rent last set or increased, or what start date should the comparison use?** Ask at the start if not already known. Accept a user-selected comparison period instead.
 - End month. If unspecified, use the latest API-eligible month, two calendar months before the current local month, then validate returned coverage. If unavailable, disclose this and establish an available endpoint.
@@ -28,11 +28,11 @@ Use the **named suburb** to select the starting SA2. The address is for verifica
 The bundled [Christchurch address and rent-area index](references/christchurch-address-index.sqlite) resolves the supplied suburb, optionally verifies the address, and returns the verified API codes and neighbouring areas in one local run:
 
 ```text
-"<python>" "<skill-dir>/scripts/rent_review.py" --lookup --suburb "Burwood" --include-adjoining
+"<python>" "<skill-dir>/scripts/rent_review.py" --lookup --suburb "Burwood"
 ```
 
-- An exact Christchurch statistical area name takes precedence. Mairehau uses Mairehau North 321700 and Mairehau South 323100. Richmond uses Richmond North 325900 and Richmond South 326800. For other suburbs with only partial name matches, present the candidates and confirm the intended grouping. For an unmatched suburb, ask which named area represents the intended market. Use --area-codes only for an explicitly confirmed selection from the matching area names and their adjoining areas.
-- With --include-adjoining, include the starting areas and the union of areas sharing a boundary stretch with them. Deduplicate the codes. Point-only contacts are excluded. The lookup flags neighbours outside Christchurch City so their inclusion is visible. Honor explicit exclusions by supplying the confirmed set through --area-codes without --include-adjoining.
+- An exact Christchurch statistical area name takes precedence. Mairehau uses Mairehau North 321700 and Mairehau South 323100. Richmond uses Richmond North 325900 and Richmond South 326800. Somerfield uses Somerfield East 329100 and Somerfield West 329200. For other suburbs with only partial name matches, present the candidates and confirm the intended grouping. For an unmatched suburb, ask which named area represents the intended market. Use --area-codes only for an explicitly confirmed selection from the matching area names and their adjoining areas.
+- By default, include the starting areas and the union of areas sharing a boundary stretch with them. Deduplicate the codes. Point-only contacts are excluded. The lookup flags neighbours outside Christchurch City so their inclusion is visible. Use `--no-include-adjoining` only for an explicit suburb-only or exclusion request. For specific exclusions, also supply the confirmed set with `--area-codes`. Confirming a split suburb selects the starting areas and leaves adjoining areas enabled.
 - The bundled [2019 SA2 boundaries and neighbours](references/christchurch-sa2-2019.geojson) support map verification and list shared boundary lengths. The address index is a snapshot of LINZ address data. Confirm unresolved address or suburb discrepancies with the user. The selected market stays anchored to the supplied suburb.
 - Christchurch City is TA2019 060. Name the actual combined areas in the summary and use a short local label in the standard PDF.
 
@@ -54,10 +54,10 @@ The runner looks up codes locally and queries both markets sequentially in 12-mo
 Use Python 3.10 or newer. Offline lookup uses SQLite. Reports also require Matplotlib and a Market Rent API key.
 
 ```text
-"<python>" "<skill-dir>/scripts/rent_review.py" --project-dir "<project>" --address "90 Aylesford Street, Mairehau, Christchurch 8013" --suburb "Mairehau" --include-adjoining --bedrooms 3 --dwelling-type House --start-month 2025-01 --end-month 2026-08
+"<python>" "<skill-dir>/scripts/rent_review.py" --project-dir "<project>" --address "90 Aylesford Street, Mairehau, Christchurch 8013" --suburb "Mairehau" --bedrooms 3 --dwelling-type House --start-month 2025-01 --end-month 2026-08
 ```
 
-Replace all example inputs with the actual selection. Dates use YYYY-MM. Omit --include-adjoining for the suburb-only comparison. The same runner and PDF template cover both scopes. Bedrooms accepts 1, 2, 3, 4, 5, 5+ or explicit ALL. Dwelling types: House, Flat, Apartment, BoardingHouse, Room, ALL. The API returns distinct 5 and 5+ rows: do not merge or reinterpret them without confirming their meaning.
+Replace all example inputs with the actual selection. Dates use YYYY-MM. Use `--no-include-adjoining` only for an explicitly requested narrower comparison. The same runner and PDF template cover both scopes. Bedrooms accepts 1, 2, 3, 4, 5, 5+ or explicit ALL. Dwelling types: House, Flat, Apartment, BoardingHouse, Room, ALL. The API returns distinct 5 and 5+ rows: do not merge or reinterpret them without confirming their meaning.
 
 Outputs: `<project>/outputs/<address>_<dwelling>_<bedrooms>_<start>_to_<end>_sa2-<scope-id>/`, containing rent_review.pdf, rent_review.png, rolling_comparison.csv, summary.json and source/ raw JSON. Summary evidence includes request URLs, file paths and SHA-256 values. Different area sets have separate output folders. Repeat a completed scope in a fresh project directory to preserve its evidence. Retrieval date is not a dataset release date.
 

@@ -1,6 +1,6 @@
 # Christchurch rent growth skill
 
-Compare the named Christchurch suburb, with adjoining areas when requested, against Christchurch City using Tenancy Services bond data. The standard PDF covers rolling geometric means, annual medians and bond lodgements for the selected bedrooms, dwelling type and dates.
+Compare the named Christchurch suburb and its adjoining statistical areas against Christchurch City using Tenancy Services bond data. The standard PDF covers rolling geometric means, annual medians and bond lodgements for the selected bedrooms, dwelling type and dates.
 
 ## Lookup data
 

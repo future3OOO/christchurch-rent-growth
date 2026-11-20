@@ -24,13 +24,13 @@ class RentReviewTests(unittest.TestCase):
         result = subprocess.run([sys.executable, "-E", "-S", rent_review.__file__, "--lookup",
                                  "--suburb", "Burwood"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        self.assertEqual(json.loads(result.stdout)["area_codes"], "325600")
+        self.assertEqual(json.loads(result.stdout)["area_codes"], self.BURWOOD_CODES)
 
     def test_lookup_uses_named_burwood_even_when_address_point_is_in_travis_wetlands(self):
         stdout = io.StringIO()
         with redirect_stdout(stdout), patch("urllib.request.urlopen") as network:
             rent_review.main(["--lookup", "--suburb", "Burwood", "--address",
-                              "280 Beach Road, Burwood", "--include-adjoining"])
+                              "280 Beach Road, Burwood"])
         network.assert_not_called()
         result = json.loads(stdout.getvalue())
         self.assertEqual(result["base_areas"], ["Burwood"])
@@ -40,11 +40,19 @@ class RentReviewTests(unittest.TestCase):
     def test_lookup_flags_postal_suburb_discrepancy_without_reselecting_market(self):
         stdout = io.StringIO()
         with redirect_stdout(stdout):
-            rent_review.main(["--lookup", "--suburb", "Edgeware", "--address", "280 Beach Road, Edgeware"])
+            rent_review.main(["--lookup", "--suburb", "Edgeware", "--address", "280 Beach Road, Edgeware", "--no-include-adjoining"])
         result = json.loads(stdout.getvalue())
         self.assertEqual(result["area_codes"], "325300")
         self.assertEqual(result["address_suburbs"], ["Burwood"])
         self.assertTrue(result["address_suburb_mismatch"])
+
+    def test_default_somerfield_scope_includes_both_starting_areas_and_all_neighbours(self):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rent_review.main(["--lookup", "--suburb", "Somerfield"])
+        scope = json.loads(stdout.getvalue())
+        self.assertEqual(scope["base_areas"], ["Somerfield East", "Somerfield West"])
+        self.assertEqual(scope["area_codes"], "329100,329200,327600,330300,328700,330600,329700,329500,328200")
 
     def response(self, request, timeout):
         url = request.full_url
@@ -117,7 +125,7 @@ class RentReviewTests(unittest.TestCase):
 
     def test_missing_individual_area_uses_a_direct_named_aggregate_for_the_same_codes(self):
         self.failure = "missing-area"
-        summary = self.report_summary("--include-adjoining", "--suburb", "Burwood (Christchurch City)")
+        summary = self.report_summary("--suburb", "Burwood (Christchurch City)")
         local, city = summary["markets"]
         self.assertEqual(local["codes"], self.BURWOOD_CODES)
         self.assertEqual([point["median"] for point in local["points"]], [620, 650])
@@ -130,15 +138,16 @@ class RentReviewTests(unittest.TestCase):
         self.group_codes = "321700,323100"
         self.group_labels = ["Mairehau North", "Mairehau South"]
         self.group_name = "Mairehau North and South"
-        report = self.report_summary("--suburb", "Mairehau (Christchurch City)", "--address", "90 Aylesford Street")
+        report = self.report_summary("--no-include-adjoining", "--suburb", "Mairehau (Christchurch City)",
+                                     "--address", "90 Aylesford Street")
         self.assertEqual(report["markets"][0]["codes"], self.group_codes)
         self.assertEqual(report["markets"][0]["points"][-1]["median"], 650)
 
     def test_both_scopes_can_run_in_the_same_project(self):
         self.failure = None
         with tempfile.TemporaryDirectory() as project:
-            local = self.run_report(project)
-            adjoining = self.run_report(project, "--include-adjoining")
+            adjoining = self.run_report(project)
+            local = self.run_report(project, "--no-include-adjoining")
             self.assertNotEqual(local, adjoining)
             for folder, codes in ((local, "325600"), (adjoining, self.BURWOOD_CODES)):
                 self.assertTrue((folder / "rent_review.pdf").is_file())
@@ -152,7 +161,7 @@ class RentReviewTests(unittest.TestCase):
             self.failure = failure
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as project:
                 with self.assertRaisesRegex(SystemExit, "VALIDATION FAILED"):
-                    self.run_report(project, "--include-adjoining")
+                    self.run_report(project)
                 self.assertEqual(list(Path(project).rglob("*.pdf")), [])
 
 
