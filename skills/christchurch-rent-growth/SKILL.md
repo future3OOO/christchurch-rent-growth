@@ -81,7 +81,7 @@ Run the bundled report command for the requested span, inspect its PDF, and link
 
 ## Recommendation and landlord message
 
-Use the Christchurch City arithmetic means in `summary.json` for the selected bedroom count and dwelling type. Calculate the proposed weekly rent as `current weekly rent × latest city mean ÷ baseline city mean`. Round to the nearest $5, with halfway amounts rounded up. Show the user both the unrounded amount and the rounded proposal.
+Use the Christchurch City arithmetic means in `summary.json` for the selected bedroom count and dwelling type. Calculate the proposed weekly rent as `current weekly rent * latest city mean / baseline city mean`. Round to the nearest $5, with halfway amounts rounded up. Show the user both the unrounded amount and the rounded proposal.
 
 If current rent is missing, deliver the PDF and ask for the current weekly rent. If city growth is zero or negative, or rounding produces no increase, explain the result and omit the increase message.
 
