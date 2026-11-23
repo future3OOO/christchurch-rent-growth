@@ -1,6 +1,6 @@
 ---
 name: christchurch-rent-growth
-description: Create bedroom-specific property rental reports comparing a named suburb plus adjoining areas with Christchurch City using Tenancy Services bond data, rolling arithmetic means, annual medians and bond lodgements since a chosen rent-review date.
+description: Create bedroom-specific property rental reports comparing a named suburb plus adjoining areas with Christchurch City using Tenancy Services bond data, rolling bond-weighted monthly medians, annual mean fallback and bond lodgements since a chosen rent-review date.
 ---
 
 # Property rent review and bond report
@@ -25,7 +25,7 @@ Use `ALL` (All bedrooms or All dwelling types) for an explicitly requested aggre
 
 Default to the named suburb plus adjoining areas. For "past 12 months", compare the latest eligible end month with the same month a year earlier. The latest eligible month is two calendar months before the current local month; validate returned coverage. For a review date, use its calendar month as the rolling annual baseline. State the actual windows with the result.
 
-For a latest-available request, if a validated response contains no published aggregate for the requested end month, rerun for the preceding month. Continue back to the latest complete comparison for both markets, keeping the same filters. Move both ends together for a rolling horizon; retain an explicit review-date baseline. Report the originally sought and actual dates. Keep explicit fixed dates unless the user agrees to a change. Handle network errors, wrong geography and invalid responses separately from unpublished data.
+For a latest-available request, if the direct annual aggregate is unpublished for the requested end month, rerun for the preceding month. Continue back to the latest complete comparison for both markets, keeping the same filters. Move both ends together for a rolling horizon; retain an explicit review-date baseline. Report the originally sought and actual dates. Keep explicit fixed dates unless the user agrees to a change. Handle network errors, wrong geography and invalid responses separately from unpublished data.
 
 If either local endpoint has fewer than 20 reported bonds, give both counts and flag how sensitive the average is to a few lettings. This is a reporting caution, not an MBIE suppression threshold. Deliver the matched-category comparison when available. Use the native selector to offer keeping it alone, adding another bedroom count (1, 2, 3, 4, 5 or 5+), or adding the direct all-bedroom aggregate. Accept several counts in free text. Produce separate labelled comparisons for chosen counts using the same dates, dwelling type and catchment; never pool their published means. Keep the property-matched recommendation as the primary benchmark.
 
@@ -55,7 +55,7 @@ The website market-rent tool uses NZAD suburb regions. Before treating a website
 
 This is the statistical Market Rent API, not the transactional Tenancy Bond API. Do not substitute sandbox, CSV, invented values or stale periods on failure.
 
-The runner looks up codes locally and queries both markets sequentially in 12-month windows using the selected bedroom and dwelling filters. A multi-area comparison uses the direct area=ALL result when all requested areas are listed. If the breakdown omits an area, request and validate a named aggregate for the same codes. The validated result feeds the standard PDF. Reject missing, duplicate, suppressed, wrong-period or wrong-geography aggregates.
+The runner looks up codes locally and queries both markets sequentially for annual windows and individual calendar months using the selected bedroom and dwelling filters. A multi-area comparison uses the direct area=ALL result when all requested areas are listed. If the breakdown omits an area, request and validate a named aggregate for the same codes. The validated result feeds the standard PDF. Reject missing, duplicate, suppressed, wrong-period or wrong-geography aggregates.
 
 ## Run
 
@@ -71,15 +71,15 @@ Outputs: `<project>/outputs/<address>_<dwelling>_<bedrooms>_<start>_to_<end>_sa2
 
 ## Calculation contract
 
-- **Primary rent measure:** the arithmetic mean (API field `mean`) from a direct API aggregate for each complete 12-month window.
-- **Rolling growth:** (mean_window / mean_baseline - 1) * 100. Keep the selected baseline throughout any user-selected horizon.
-- **Median cross-check:** direct API med for that same complete annual window and property selection. Use the combined API row for grouped local areas. Never average monthly or individual-area medians.
-- **Endpoint table:** baseline and latest arithmetic means and medians, each with its own percentage change. State exact window dates.
+- For each market and rolling year, multiply each calendar month's median weekly rent by its published bond lodgements, sum those products and divide by the sum of the 12 counts. Use the market-wide monthly aggregate and rounded MBIE counts. Each distinct month is requested once per market apart from retries.
+- When any window is complete, chart the weighted measure and leave incomplete windows as gaps. The endpoint table shows the weighted measure and annual arithmetic mean.
+- When a market has zero complete weighted windows in the selected span, chart its direct annual arithmetic mean and show annual mean and annual median in its table rows. Select the fallback independently for each market and identify each chart line's measure.
+- Calculate growth from the selected measure at the fixed baseline and endpoint. An unavailable endpoint leaves the change unavailable. Transport errors or invalid responses stop the run after applicable retries.
 - **Bonds:** direct annual nLodged, not nCurr (active bonds at endpoint). Counts are randomly rounded; totals can differ from summed cells. Label bars "Year to [month/year]" and give the full annual windows. These are not cumulative lodgements since the rent increase or counts of tenants receiving increases.
 
 Do not reconstruct annual or grouped means from rounded counts when a direct aggregate exists. Excluding one-bedroom labels from an otherwise all-bedroom analysis is a separate approximate analysis: the API's bedroom filter does not necessarily recompute the ALL subtotal. Disclose reconstruction and aggregate inconsistencies; never silently use these estimates in the standard report. Unknown-bedroom records are not known two-plus-bedroom properties.
 
-Each bond contributes equally to the annual arithmetic mean. Unusually high or low rents and changes in the mix of properties can move it. Use the direct annual median as a cross-check.
+Each bond contributes equally to the annual arithmetic mean. Unusually high or low rents and changes in the mix of properties can move it.
 
 Tenancy Services acknowledges inaccurate bedroom counts among some one-bedroom records, affecting counts and rents. When that category is included, identify its relevance without asserting an unproven cause or silently dropping records. Exclusion does not repair mislabelled larger homes. Provisional data/reclassification may affect remaining groups too.
 
@@ -89,7 +89,7 @@ Run the bundled report command for the requested span, inspect its PDF, and link
 
 ## Recommendation and landlord message
 
-Use both markets' unrounded `arithmetic_change_pct` values from `summary.json` for the same bedroom count, dwelling type and dates. Give the selected local market and Christchurch City equal weight: `recommended change (%) = (local change (%) + city change (%)) / 2`. Apply that rate to the tenancy: `proposed weekly rent = current weekly rent * (1 + recommended change / 100)`. Round the resulting rent to the nearest $5, with halfway amounts rounded up. Show the two observed rates, the blended recommendation rate, and the unrounded and rounded rent.
+Use both markets' unrounded `chart_change_pct` values from `summary.json` for the same bedroom count, dwelling type and dates. Name each market's chart measure. If either rate is unavailable, deliver the report and omit the blended recommendation. Give the selected local market and Christchurch City equal weight: `recommended change (%) = (local change (%) + city change (%)) / 2`. Apply that rate to the tenancy: `proposed weekly rent = current weekly rent * (1 + recommended change / 100)`. Round the resulting rent to the nearest $5, with halfway amounts rounded up. Show the two observed rates, the blended recommendation rate, and the unrounded and rounded rent.
 
 If current rent is missing, deliver the PDF and blended rate and ask for the current weekly rent before quoting a dollar proposal. If the blended rate is zero or negative, or rounding produces no increase, explain the result and omit the increase message.
 

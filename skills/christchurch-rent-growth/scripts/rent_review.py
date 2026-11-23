@@ -106,21 +106,31 @@ def render(summary: dict, out: Path) -> Path:
     table_rows = [["Area / measure", summary["baseline_header"], summary["latest_header"], "Change"]]
     for market, color, left in zip(summary["markets"], colors, [.075, .52]):
         points = market["points"]
-        values = [p["arithmetic_mean"] for p in points]
-        rates = [percent_change(v, values[0]) for v in values[:-1]] + [market["arithmetic_change_pct"]]
+        field = market["chart_measure"]
+        weighted = field == "weighted_monthly_medians"
+        values = [p[field] for p in points]
+        rates = [percent_change(v, values[0]) if v is not None and values[0] is not None else None for v in values]
         fig.text(left, .865, market["label"], fontsize=12, color=color, weight="bold")
-        fig.text(left, .838, f"${values[-1]:.2f}/week", fontsize=21, color=ink, weight="bold")
-        fig.text(left, .817, f"{rates[-1]:+.1f}% change from {summary['start_label']}", fontsize=10.5, color=muted)
-        for ax, data, endpoint in [(levels, values, f"${values[-1]:.2f}"), (changes, rates, f"{rates[-1]:+.1f}%")]:
+        fig.text(left, .838, f"${values[-1]:.2f}/week" if values[-1] is not None else "Incomplete window",
+                 fontsize=21, color=ink, weight="bold")
+        description = "Bond-weighted monthly medians" if weighted else "Annual mean (fallback)"
+        fig.text(left, .815, description, fontsize=10.5, color=color)
+        growth = f"{rates[-1]:+.1f}% from {summary['start_label']}" if rates[-1] is not None else "Change unavailable"
+        fig.text(left, .799, growth, fontsize=9, color=muted)
+        for ax, data, fmt in [(levels, values, "${:.2f}"), (changes, rates, "{:+.1f}%")]:
             ax.plot(range(len(data)), data, color=color, lw=2.3, marker="o", ms=3.5)
-            ax.annotate(endpoint, (len(data) - 1, data[-1]), xytext=(10, 0), textcoords="offset points",
-                        color=color, weight="bold", va="center", annotation_clip=False)
-        for field, label, precision in [("arithmetic_mean", "arithmetic mean", 2), ("median", "median", 0)]:
-            first, last = points[0][field], points[-1][field]
-            change = rates[-1] if field == "arithmetic_mean" else percent_change(last, first)
-            table_rows.append([f"{market['label']} | {label}", f"${first:.{precision}f}",
-                               f"${last:.{precision}f}", f"{change:+.1f}%"])
-    levels.set_ylabel("Arithmetic mean weekly rent", color=muted, labelpad=12)
+            if data[-1] is not None:
+                ax.annotate(fmt.format(data[-1]), (len(data) - 1, data[-1]), xytext=(10, 0), textcoords="offset points",
+                            color=color, weight="bold", va="center", annotation_clip=False)
+        measures = ([("weighted_monthly_medians", "Weighted monthly medians", 2), ("arithmetic_mean", "Annual mean", 2)]
+                    if weighted else [("arithmetic_mean", "Annual mean", 2), ("median", "Annual median", 0)])
+        for key, label, precision in measures:
+            first, last = points[0][key], points[-1][key]
+            table_rows.append([f"{market['label']} | {label}",
+                               f"${first:.{precision}f}" if first is not None else "Unavailable",
+                               f"${last:.{precision}f}" if last is not None else "Unavailable",
+                               f"{percent_change(last, first):+.1f}%" if None not in (first, last) else "Unavailable"])
+    levels.set_ylabel("Weekly rent", color=muted, labelpad=12)
     levels.yaxis.set_major_formatter(StrMethodFormatter("${x:,.0f}"))
     levels.tick_params(axis="x", labelbottom=False, length=0)
     levels.margins(y=.18)
@@ -134,15 +144,15 @@ def render(summary: dict, out: Path) -> Path:
               else dates[i].strftime("%b") for n, i in enumerate(ticks)]
     changes.set_xticks(ticks, labels)
     changes.set_xlabel("End month of each rolling 12-month window", fontsize=10, color=muted, labelpad=10)
-    fig.text(.095, .592, f"Change relative to the rolling 12-month arithmetic mean ending {summary['start_label']}", fontsize=10, color=muted)
+    fig.text(.095, .592, f"Change relative to the charted measure for the year ending {summary['start_label']}", fontsize=10, color=muted)
     fig.add_artist(plt.Line2D([.075, .93], [.425, .425], transform=fig.transFigure, color="#dce2dc", lw=1))
     fig.text(.075, .400, "Change from the selected baseline", fontsize=16, weight="bold", color=ink)
     fig.text(.075, .379, summary["window_note"], fontsize=9.5, color=muted)
     table_ax = fig.add_axes([.075, .282, .855, .082])
     table_ax.axis("off")
-    table = table_ax.table(cellText=table_rows, cellLoc="right", colWidths=[.46, .21, .21, .12], bbox=[0, 0, 1, 1])
+    table = table_ax.table(cellText=table_rows, cellLoc="right", colWidths=[.53, .18, .18, .11], bbox=[0, 0, 1, 1])
     table.auto_set_font_size(False)
-    table.set_fontsize(9)
+    table.set_fontsize(8.5)
     for (row, col), cell in table.get_celld().items():
         cell.set_edgecolor("#dce2dc")
         cell.set_linewidth(.4)
@@ -182,9 +192,9 @@ def render(summary: dict, out: Path) -> Path:
         fig.text(.075, .111, f"Small local sample: {before} and {after} reported bonds. A few lettings can materially change the average.",
                  fontsize=9.5, color=ink)
     fig.text(.075, .094, "Reading the comparison", fontsize=10.5, weight="bold", color=ink)
-    fig.text(.075, .080, "Each point is the average weekly rent on matching new bonds over the full 12-month window.\n"
-             "The baseline is a full year ending in the selected start month, not a single-month rent.\n"
-             "Medians are direct annual API values. Changes can reflect the property mix, not increases on the same homes.",
+    fig.text(.075, .080, "Multiply each monthly median by its published bond count; sum the products and divide by the sum of the counts.\n"
+             "Weights use rounded lodgements. A gap means the window lacks one or more monthly inputs.\n"
+             "If no window is complete for a market, its line uses the annual mean and its table includes the annual median.",
              va="top", fontsize=9, color=muted, linespacing=1.55)
     fig.text(.075, .030, f"Source: MBIE / Tenancy Services Market Rent API | Retrieved {summary['retrieved_date']}", fontsize=8.5,
              color=muted, url="https://portal.api.business.govt.nz/api/market-rent")
@@ -200,8 +210,9 @@ class IncompleteAreaBreakdown(ValueError):
     """The area-code response omitted part of a requested group."""
 
 
-def annual_row(payload: dict, definition: str, labels: list, end: date, dwelling: str, bedrooms: str) -> dict:
-    start, last = shift(end, -11), shift(end, 1) - timedelta(days=1)
+def period_row(payload: dict, definition: str, labels: list, end: date, dwelling: str, bedrooms: str,
+               months: int) -> dict | None:
+    start, last = shift(end, 1 - months), shift(end, 1) - timedelta(days=1)
     try:
         covered = [date(*map(int, v.split("-"))) for v in payload["periodCovered"].split("/")]
     except (KeyError, TypeError, ValueError, AttributeError):
@@ -215,22 +226,29 @@ def annual_row(payload: dict, definition: str, labels: list, end: date, dwelling
     expected = set(labels)
     if definition == "SAU2019" and len(expected) > 1 and returned < expected:
         raise IncompleteAreaBreakdown()
+    if not items and months == 1:
+        return None
     if not items:
         fail(f"No published aggregate for {', '.join(labels)}, {dwelling}, {bedrooms} bedrooms, window ending {iso(end)}")
     if returned != expected:
         fail("API returned missing or unexpected named areas")
     area = "ALL" if len(labels) > 1 else labels[0]
     rows = [r for r in items if r.get("area") == area and r.get("dwell") == dwelling and r.get("nBedrms") == bedrooms]
+    if not rows and months == 1:
+        return None
     if len(rows) != 1:
         fail("expected exactly one unsuppressed aggregate with the requested dwelling and bedroom selection")
-    row = rows[0]
+    return rows[0]
+
+def annual_row(payload: dict, definition: str, labels: list, end: date, dwelling: str, bedrooms: str) -> dict:
+    row = period_row(payload, definition, labels, end, dwelling, bedrooms, 12)
     if type(row.get("nLodged")) is not int or row["nLodged"] <= 0:
         fail("missing or suppressed bond count")
     if any(type(row.get(k)) not in (int, float) or not math.isfinite(row[k]) for k in ["mean", "med"]):
         fail("missing or invalid annual arithmetic mean or median")
     if row["mean"] <= 0 or row["med"] <= 0:
         fail("non-positive annual rent")
-    return {"window_start": iso(start), "window_end": iso(end), "arithmetic_mean": row["mean"],
+    return {"window_start": iso(shift(end, -11)), "window_end": iso(end), "arithmetic_mean": row["mean"],
             "median": row["med"], "lodged_bonds": row["nLodged"]}
 
 
@@ -401,8 +419,37 @@ def main(argv=None) -> Path | None:
                 point = annual_row(payload, "USERDEFINED", [named_group], month, args.dwelling_type, args.bedrooms)
             point["request"] = evidence[-1]
             points.append(point)
-            print(label, point["window_end"], f"${point['arithmetic_mean']:.2f}", flush=True)
+            print(label, point["window_end"], f"annual mean ${point['arithmetic_mean']:.2f}", flush=True)
+        monthly = []
+        for offset in range(-11, count):
+            month = shift(start, offset)
+            query = {**params, "period-ending": iso(month), "num-months": 1}
+            if len(market_labels) > 1:
+                payload = named_group_statistics(query, named_group, key, source, evidence)
+                row = period_row(payload, "USERDEFINED", [named_group], month, args.dwelling_type, args.bedrooms, 1)
+            else:
+                payload = api_get(BASE, "statistics", key, source, evidence, **query)
+                row = period_row(payload, definition, market_labels, month, args.dwelling_type, args.bedrooms, 1)
+            median = row.get("med") if row else None
+            bonds = row.get("nLodged") if row else None
+            if median is not None and (type(median) not in (int, float) or not math.isfinite(median) or median <= 0):
+                fail(f"invalid monthly median for {label} {iso(month)}")
+            if bonds is not None and (type(bonds) is not int or bonds < 0):
+                fail(f"invalid monthly bond count for {label} {iso(month)}")
+            monthly.append({"month": iso(month), "median": median, "lodged_bonds": bonds, "request": evidence[-1]})
+
+        for offset, point in enumerate(points):
+            window = monthly[offset:offset + 12]
+            point["weighted_monthly_medians"] = None
+            if all(m["median"] is not None and m["lodged_bonds"] for m in window):
+                point["weighted_monthly_medians"] = (math.fsum(m["median"] * m["lodged_bonds"] for m in window)
+                                                     / sum(m["lodged_bonds"] for m in window))
+        measure = ("weighted_monthly_medians" if any(p["weighted_monthly_medians"] is not None for p in points)
+                   else "arithmetic_mean")
+        first, last = points[0][measure], points[-1][measure]
         markets.append({"label": label, "definition": definition, "codes": market_codes, "points": points,
+                        "monthly_inputs": monthly, "chart_measure": measure,
+                        "chart_change_pct": percent_change(last, first) if first is not None and last is not None else None,
                         "arithmetic_change_pct": percent_change(points[-1]["arithmetic_mean"], points[0]["arithmetic_mean"])})
     bedroom_label = "All bedrooms" if args.bedrooms == "ALL" else args.bedrooms + "-bedroom"
     type_label = "all dwelling types" if args.dwelling_type == "ALL" else args.dwelling_type
@@ -414,15 +461,16 @@ def main(argv=None) -> Path | None:
                "window_note": f"Equal 12-month windows: {shift(start, -11):%b %Y}-{start:%b %Y} vs {shift(end, -11):%b %Y}-{end:%b %Y}.",
                "geography_note": f"Local: SA2 2019 {codes}. Christchurch City: TA 2019 060. Provisional bond data.",
                "retrieved_at": now.isoformat(), "retrieved_date": now.strftime("%d %B %Y"),
-               "method": "Direct annual arithmetic mean and median. Change from the selected baseline. Randomly rounded nLodged.",
+               "method": "Rolling bond-weighted average of monthly medians; per-market annual mean fallback.",
                "requests": evidence, "markets": markets}
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     with (out / "rolling_comparison.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
-        writer.writerow(["market", "window_start", "window_end", "arithmetic_mean", "median", "lodged_bonds"])
+        fields = ["window_start", "window_end", "arithmetic_mean", "median", "lodged_bonds", "weighted_monthly_medians"]
+        writer.writerow(["market", *fields, "chart_measure"])
         for market in markets:
-            for p in market["points"]:
-                writer.writerow([market["label"]] + [p[k] for k in ["window_start", "window_end", "arithmetic_mean", "median", "lodged_bonds"]])
+            for point in market["points"]:
+                writer.writerow([market["label"], *(point[k] for k in fields), market["chart_measure"]])
     print(render(summary, out))
     return out
 

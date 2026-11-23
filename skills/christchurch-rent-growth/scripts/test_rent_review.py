@@ -66,6 +66,19 @@ class RentReviewTests(unittest.TestCase):
         url = request.full_url
         query = parse_qs(urlparse(url).query)
         self.assertTrue(urlparse(url).path.endswith("/statistics"))
+        if query["num-months"] == ["1"]:
+            end = rent_review.date.fromisoformat(query["period-ending"][0] + "-01")
+            last = rent_review.shift(end, 1) - rent_review.timedelta(days=1)
+            definition = query["area-definition"][0]
+            local = definition != "TA2019"
+            label = self.group_name if definition == "user-defined" else "Burwood" if local else "Christchurch City"
+            rows = [{"area": label, "dwell": "House", "nBedrms": "3",
+                     "med": 800 if end.month == 2 else 600, "nLodged": 30 if end.month == 2 else 6}]
+            if local and (self.failure == "no-months" or self.failure == "gap" and end.year == 2024 and end.month == 2):
+                rows = []
+            payload = {"periodCovered": f"{end}/{last}", "areaDefinition": definition.upper().replace("-", ""),
+                       "items": rows}
+            return io.BytesIO(json.dumps(payload).encode())
         self.assertEqual(query["num-months"], ["12"])
         self.assertEqual(query["dwelling-type"], ["House"])
         self.assertEqual(query["num-bedrooms"], ["3"])
@@ -122,6 +135,21 @@ class RentReviewTests(unittest.TestCase):
             self.assertTrue((output / "rent_review.png").is_file())
             return json.loads((output / "summary.json").read_text())
 
+    def test_monthly_coverage_selects_each_market_measure(self):
+        for self.failure, expected in [(None, "weighted_monthly_medians"), ("gap", "weighted_monthly_medians"),
+                                       ("no-months", "arithmetic_mean")]:
+            with self.subTest(coverage=self.failure):
+                local, city = self.report_summary()["markets"]
+                self.assertEqual(local["chart_measure"], expected)
+                self.assertEqual(city["chart_measure"], "weighted_monthly_medians")
+                self.assertAlmostEqual(city["points"][0]["weighted_monthly_medians"], (800*30 + 600*66)/96)
+                if self.failure == "gap":
+                    self.assertIsNone(local["points"][0]["weighted_monthly_medians"])
+                    self.assertIsNone(local["chart_change_pct"])
+                    self.assertIsNotNone(local["points"][1]["weighted_monthly_medians"])
+                if self.failure == "no-months":
+                    self.assertAlmostEqual(local["chart_change_pct"], 8)
+
     def test_full_report_uses_direct_annual_medians_and_arithmetic_baseline(self):
         self.failure = None
         for market in self.report_summary()["markets"]:
@@ -140,7 +168,7 @@ class RentReviewTests(unittest.TestCase):
         self.assertEqual([point["median"] for point in local["points"]], [620, 650])
         self.assertTrue(all("user-defined-area-mappings" in p["request"]["url"] for p in local["points"]))
         self.assertTrue(all("area-definition=TA2019" in p["request"]["url"] for p in city["points"]))
-        self.assertEqual(len(summary["requests"]), 5)
+        self.assertEqual(len(summary["requests"]), 5 + 26)
 
     def test_split_suburb_suffix_does_not_enter_the_named_mapping(self):
         self.failure = "missing-area"
@@ -177,10 +205,10 @@ class RentReviewTests(unittest.TestCase):
 
         with patch.object(self, "response", interrupted):
             summary = self.report_summary()
-        self.assertEqual(len(calls), 5)
+        self.assertEqual(len(calls), 5 + 26)
         self.assertEqual(calls[1], calls[2])
-        self.assertEqual(len(set(calls)), 4)
-        self.assertEqual(len(summary["requests"]), 4)
+        self.assertEqual(len(set(calls)), 4 + 26)
+        self.assertEqual(len(summary["requests"]), 4 + 26)
 
     def test_persistent_server_error_names_period_and_writes_no_report(self):
         calls = []
