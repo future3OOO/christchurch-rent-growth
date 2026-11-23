@@ -25,7 +25,7 @@ Use `ALL` (All bedrooms or All dwelling types) for an explicitly requested aggre
 
 Default to the named suburb plus adjoining areas. For "past 12 months", compare the latest eligible end month with the same month a year earlier. The latest eligible month is two calendar months before the current local month; validate returned coverage. For a review date, use its calendar month as the rolling annual baseline. State the actual windows with the result.
 
-For a latest-available request, if the direct annual aggregate is unpublished for the requested end month, rerun for the preceding month. Continue back to the latest complete comparison for both markets, keeping the same filters. Move both ends together for a rolling horizon; retain an explicit review-date baseline. Report the originally sought and actual dates. Keep explicit fixed dates unless the user agrees to a change. Handle network errors, wrong geography and invalid responses separately from unpublished data.
+For a latest-available request, if the direct annual aggregate is unpublished for the requested end month, rerun for the preceding month. Keep the same filters and try earlier end months only while they are later than the originally requested baseline. If none yields a complete comparison for both markets, report the end months checked and ask whether to extend the search or broaden the selection. Move both ends together for a rolling horizon; retain an explicit review-date baseline. Report the originally sought and actual dates. Keep explicit fixed dates unless the user agrees to a change. Handle network errors, wrong geography and invalid responses separately from unpublished data.
 
 ## Offer a broader comparison
 
