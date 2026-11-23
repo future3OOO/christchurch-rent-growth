@@ -27,7 +27,17 @@ Default to the named suburb plus adjoining areas. For "past 12 months", compare 
 
 For a latest-available request, if the direct annual aggregate is unpublished for the requested end month, rerun for the preceding month. Continue back to the latest complete comparison for both markets, keeping the same filters. Move both ends together for a rolling horizon; retain an explicit review-date baseline. Report the originally sought and actual dates. Keep explicit fixed dates unless the user agrees to a change. Handle network errors, wrong geography and invalid responses separately from unpublished data.
 
-If either local endpoint has fewer than 20 reported bonds, give both counts and flag how sensitive the average is to a few lettings. This is a reporting caution, not an MBIE suppression threshold. Deliver the matched-category comparison when available. Use the native selector to offer keeping it alone, adding another bedroom count (1, 2, 3, 4, 5 or 5+), or adding the direct all-bedroom aggregate. Accept several counts in free text. Produce separate labelled comparisons for chosen counts using the same dates, dwelling type and catchment; never pool their published means. Keep the property-matched recommendation as the primary benchmark.
+## Offer a broader comparison
+
+When either market uses the annual-mean fallback because a monthly median or weight is unavailable, or either local annual endpoint has fewer than 20 reported bonds, deliver the matched report and its recommendation. Name the affected market and missing months or small counts. An unpublished row does not establish zero lodgements.
+
+In the same turn, use the native question form to offer a supplementary comparison unless the user has already selected one. Tailor the options to the current filters and omit duplicates:
+
+- Keep the selected bedroom count and include all dwelling types (for example, **two bedrooms, all dwelling types**).
+- Keep the selected dwelling type and include all bedrooms.
+- Choose specific categories, include all bedrooms and dwelling types, or keep the matched report alone.
+
+For specific selections, show the API choices: **1, 2, 3, 4, 5, 5+, ALL** bedrooms and **House/townhouse, Flat/bedsit, Apartment, Boarding house room, Room, ALL** dwelling types. Accept multiple choices. Query published `ALL` aggregates directly. For selected subsets, run each requested combination as a separate labelled series; combining published medians cannot produce a pooled median. Keep dates and geography fixed. If both filters are already `ALL`, explain coverage and skip the broadening prompt. Use the matched report for the tenancy recommendation unless the user selects another benchmark.
 
 ## Geography
 
