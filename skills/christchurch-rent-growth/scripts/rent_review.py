@@ -12,6 +12,7 @@ import sys
 import time
 import unicodedata
 import urllib.request
+from http.client import IncompleteRead
 from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -54,10 +55,10 @@ def api_get(base: str, path: str, key: str, source: Path, evidence: list, **para
             with urllib.request.urlopen(request, timeout=130) as response:
                 raw = response.read()
             break
-        except OSError as exc:
+        except (OSError, IncompleteRead) as exc:
             reason = exc.reason if isinstance(exc, URLError) else exc
             transient = (isinstance(exc, HTTPError) and exc.code in (500, 502, 503, 504)
-                         or isinstance(reason, (TimeoutError, ConnectionError)))
+                         or isinstance(reason, (TimeoutError, ConnectionError, IncompleteRead)))
             if attempt or not transient:
                 fail(f"Market Rent API request failed for {params['area-definition']} "
                      f"window ending {params['period-ending']}: {exc}")

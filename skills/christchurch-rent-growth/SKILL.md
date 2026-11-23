@@ -59,7 +59,7 @@ The runner looks up codes locally and queries both markets sequentially for annu
 
 ## Run
 
-Use Python 3.10 or newer. Offline lookup uses SQLite. Reports also require Matplotlib and a Market Rent API key. If uv is available, try the report command below with `uv run --offline --with matplotlib python` in place of `"<python>"`. This reuses cached packages. Otherwise select an existing Python that can import Matplotlib before installing anything. The runner writes both the PDF and its PNG preview.
+Use Python 3.10 or newer. Offline lookup uses SQLite. Reports also require Matplotlib and a Market Rent API key. If uv is available, try the report command below with `uv run --offline --with matplotlib python` in place of `"<python>"`. This reuses cached packages. If uv or the cached Matplotlib package is unavailable, select an existing Python that can import Matplotlib before installing anything. The runner writes both the PDF and its PNG preview.
 
 ```text
 "<python>" "<skill-dir>/scripts/rent_review.py" --project-dir "<project>" --address "90 Aylesford Street, Mairehau, Christchurch 8013" --suburb "Mairehau" --bedrooms 3 --dwelling-type House --start-month 2025-01 --end-month 2026-08
@@ -89,7 +89,7 @@ Run the bundled report command for the requested span, inspect its PDF, and link
 
 ## Recommendation and landlord message
 
-Use both markets' unrounded `chart_change_pct` values from `summary.json` for the same bedroom count, dwelling type and dates. Name each market's chart measure. If either rate is unavailable, deliver the report and omit the blended recommendation. Give the selected local market and Christchurch City equal weight: `recommended change (%) = (local change (%) + city change (%)) / 2`. Apply that rate to the tenancy: `proposed weekly rent = current weekly rent * (1 + recommended change / 100)`. Round the resulting rent to the nearest $5, with halfway amounts rounded up. Show the two observed rates, the blended recommendation rate, and the unrounded and rounded rent.
+Use both markets' unrounded `chart_change_pct` values from `summary.json` for the same bedroom count, dwelling type and dates. The blend gives each market equal weight even when their chart measures differ. Identify both measures and describe the result as a blended recommendation. If either rate is unavailable, deliver the report and omit the blended recommendation. Give the selected local market and Christchurch City equal weight: `recommended change (%) = (local change (%) + city change (%)) / 2`. Apply that rate to the tenancy: `proposed weekly rent = current weekly rent * (1 + recommended change / 100)`. Round the resulting rent to the nearest $5, with halfway amounts rounded up. Show the two observed rates, the blended recommendation rate, and the unrounded and rounded rent.
 
 If current rent is missing, deliver the PDF and blended rate and ask for the current weekly rent before quoting a dollar proposal. If the blended rate is zero or negative, or rounding produces no increase, explain the result and omit the increase message.
 

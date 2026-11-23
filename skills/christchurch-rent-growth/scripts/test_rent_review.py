@@ -66,6 +66,8 @@ class RentReviewTests(unittest.TestCase):
         url = request.full_url
         query = parse_qs(urlparse(url).query)
         self.assertTrue(urlparse(url).path.endswith("/statistics"))
+        self.assertEqual(query["dwelling-type"], ["House"])
+        self.assertEqual(query["num-bedrooms"], ["3"])
         if query["num-months"] == ["1"]:
             end = rent_review.date.fromisoformat(query["period-ending"][0] + "-01")
             last = rent_review.shift(end, 1) - rent_review.timedelta(days=1)
@@ -80,8 +82,6 @@ class RentReviewTests(unittest.TestCase):
                        "items": rows}
             return io.BytesIO(json.dumps(payload).encode())
         self.assertEqual(query["num-months"], ["12"])
-        self.assertEqual(query["dwelling-type"], ["House"])
-        self.assertEqual(query["num-bedrooms"], ["3"])
         end = query["period-ending"][0]
         definition = query["area-definition"][0]
         latest = end == "2025-02"
