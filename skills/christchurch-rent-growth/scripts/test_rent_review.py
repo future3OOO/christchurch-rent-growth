@@ -79,6 +79,8 @@ class RentReviewTests(unittest.TestCase):
             if local and (self.failure == "no-months" or self.failure == "gap" and end.year == 2024 and end.month == 2
                           or self.failure == "latest-gap" and end.year == 2025 and end.month == 2):
                 rows = []
+            if not local and self.failure == "city-gap" and end == rent_review.date(2025, 2, 1):
+                rows = []
             payload = {"periodCovered": f"{end}/{last}", "areaDefinition": definition.upper().replace("-", ""),
                        "items": rows}
             return io.BytesIO(json.dumps(payload).encode())
@@ -136,15 +138,17 @@ class RentReviewTests(unittest.TestCase):
             self.assertTrue((output / "rent_review.png").is_file())
             return json.loads((output / "summary.json").read_text())
 
-    def test_monthly_coverage_selects_each_market_measure(self):
+    def test_monthly_coverage_selects_one_measure_for_both_markets(self):
         for self.failure, expected in [(None, "weighted_monthly_medians"), ("gap", "arithmetic_mean"), ("latest-gap", "arithmetic_mean"),
-                                       ("no-months", "arithmetic_mean")]:
+                                       ("no-months", "arithmetic_mean"), ("city-gap", "arithmetic_mean")]:
             with self.subTest(coverage=self.failure):
                 summary = self.report_summary()
                 local, city = summary["markets"]
                 self.assertAlmostEqual(summary["recommended_change_pct"], (local["chart_change_pct"] + city["chart_change_pct"]) / 2)
                 self.assertEqual(local["chart_measure"], expected)
-                self.assertEqual(city["chart_measure"], "weighted_monthly_medians")
+                self.assertEqual(city["chart_measure"], expected)
+                if expected == "arithmetic_mean":
+                    self.assertAlmostEqual(summary["recommended_change_pct"], 8)
                 self.assertAlmostEqual(city["points"][0]["weighted_monthly_medians"], (800*30 + 600*66)/96)
                 if self.failure == "gap":
                     self.assertIsNone(local["points"][0]["weighted_monthly_medians"])

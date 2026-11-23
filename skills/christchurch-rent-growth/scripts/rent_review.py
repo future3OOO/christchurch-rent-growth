@@ -195,7 +195,7 @@ def render(summary: dict, out: Path) -> Path:
     fig.text(.075, .094, "Reading the comparison", fontsize=10.5, weight="bold", color=ink)
     fig.text(.075, .080, "Multiply each monthly median by its published bond count; sum the products and divide by the sum of the counts.\n"
              "Weights use rounded lodgements. Every weighted point requires 12 published monthly inputs.\n"
-             "If any window is incomplete, that market uses annual means throughout and its table includes the annual median.",
+             "If either market lacks a complete window, both use annual means throughout and the table shows both annual medians.",
              va="top", fontsize=9, color=muted, linespacing=1.55)
     fig.text(.075, .030, f"Source: MBIE / Tenancy Services Market Rent API | Retrieved {summary['retrieved_date']}", fontsize=8.5,
              color=muted, url="https://portal.api.business.govt.nz/api/market-rent")
@@ -445,13 +445,17 @@ def main(argv=None) -> Path | None:
             if all(m["median"] is not None and m["lodged_bonds"] for m in window):
                 point["weighted_monthly_medians"] = (math.fsum(m["median"] * m["lodged_bonds"] for m in window)
                                                      / sum(m["lodged_bonds"] for m in window))
-        measure = ("weighted_monthly_medians" if all(p["weighted_monthly_medians"] is not None for p in points)
-                   else "arithmetic_mean")
-        first, last = points[0][measure], points[-1][measure]
         markets.append({"label": label, "definition": definition, "codes": market_codes, "points": points,
-                        "monthly_inputs": monthly, "chart_measure": measure,
-                        "chart_change_pct": percent_change(last, first) if first is not None and last is not None else None,
+                        "monthly_inputs": monthly,
                         "arithmetic_change_pct": percent_change(points[-1]["arithmetic_mean"], points[0]["arithmetic_mean"])})
+
+    complete = all(point["weighted_monthly_medians"] is not None
+                   for market in markets for point in market["points"])
+    measure = "weighted_monthly_medians" if complete else "arithmetic_mean"
+    for market in markets:
+        points = market["points"]
+        market["chart_measure"] = measure
+        market["chart_change_pct"] = percent_change(points[-1][measure], points[0][measure])
     bedroom_label = "All bedrooms" if args.bedrooms == "ALL" else args.bedrooms + "-bedroom"
     type_label = "all dwelling types" if args.dwelling_type == "ALL" else args.dwelling_type
     now = datetime.now().astimezone()
@@ -462,7 +466,7 @@ def main(argv=None) -> Path | None:
                "window_note": f"Equal 12-month windows: {shift(start, -11):%b %Y}-{start:%b %Y} vs {shift(end, -11):%b %Y}-{end:%b %Y}.",
                "geography_note": f"Local: SA2 2019 {codes}. Christchurch City: TA 2019 060. Provisional bond data.",
                "retrieved_at": now.isoformat(), "retrieved_date": now.strftime("%d %B %Y"),
-               "method": "Rolling bond-weighted average of monthly medians; per-market annual mean fallback.",
+               "method": "Rolling bond-weighted average of monthly medians; report-wide annual mean fallback.",
                "recommended_change_pct": sum(m["chart_change_pct"] for m in markets) / 2,
                "requests": evidence, "markets": markets}
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
