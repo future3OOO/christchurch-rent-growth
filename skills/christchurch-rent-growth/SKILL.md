@@ -72,8 +72,8 @@ Outputs: `<project>/outputs/<address>_<dwelling>_<bedrooms>_<start>_to_<end>_sa2
 ## Calculation contract
 
 - For each market and rolling year, multiply each calendar month's median weekly rent by its published bond lodgements, sum those products and divide by the sum of the 12 counts. Use the market-wide monthly aggregate and rounded MBIE counts. Each distinct month is requested once per market apart from retries.
-- When any window is complete, chart the weighted measure and leave incomplete windows as gaps. The endpoint table shows the weighted measure and annual arithmetic mean.
-- When a market has zero complete weighted windows in the selected span, chart its direct annual arithmetic mean and show annual mean and annual median in its table rows. Select the fallback independently for each market and identify each chart line's measure.
+- When all chart windows are complete, chart the weighted measure. The endpoint table shows the weighted measure and annual arithmetic mean.
+- When any weighted window is incomplete in the selected span for a market, chart its direct annual arithmetic mean and show annual mean and annual median in its table rows. Select the fallback independently for each market and identify each chart line's measure.
 - Calculate growth from the selected measure at the fixed baseline and endpoint. An unavailable endpoint leaves the change unavailable. Transport errors or invalid responses stop the run after applicable retries.
 - **Bonds:** direct annual nLodged, not nCurr (active bonds at endpoint). Counts are randomly rounded; totals can differ from summed cells. Label bars "Year to [month/year]" and give the full annual windows. These are not cumulative lodgements since the rent increase or counts of tenants receiving increases.
 
@@ -89,7 +89,7 @@ Run the bundled report command for the requested span, inspect its PDF, and link
 
 ## Recommendation and landlord message
 
-Use both markets' unrounded `chart_change_pct` values from `summary.json` for the same bedroom count, dwelling type and dates. The blend gives each market equal weight even when their chart measures differ. Identify both measures and describe the result as a blended recommendation. If either rate is unavailable, deliver the report and omit the blended recommendation. Give the selected local market and Christchurch City equal weight: `recommended change (%) = (local change (%) + city change (%)) / 2`. Apply that rate to the tenancy: `proposed weekly rent = current weekly rent * (1 + recommended change / 100)`. Round the resulting rent to the nearest $5, with halfway amounts rounded up. Show the two observed rates, the blended recommendation rate, and the unrounded and rounded rent.
+Include the runner’s `recommended_change_pct` from `summary.json` in the final response. It uses both markets’ unrounded `chart_change_pct` for the same bedroom count, dwelling type and dates. The blend gives each market equal weight even when their chart measures differ. Identify both measures and describe the result as a blended recommendation. Give the selected local market and Christchurch City equal weight: `recommended change (%) = (local change (%) + city change (%)) / 2`. Apply that rate to the tenancy: `proposed weekly rent = current weekly rent * (1 + recommended change / 100)`. Round the resulting rent to the nearest $5, with halfway amounts rounded up. Show the two observed rates, the blended recommendation rate, and the unrounded and rounded rent.
 
 If current rent is missing, deliver the PDF and blended rate and ask for the current weekly rent before quoting a dollar proposal. If the blended rate is zero or negative, or rounding produces no increase, explain the result and omit the increase message.
 

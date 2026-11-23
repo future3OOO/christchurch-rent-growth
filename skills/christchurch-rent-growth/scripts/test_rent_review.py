@@ -76,7 +76,8 @@ class RentReviewTests(unittest.TestCase):
             label = self.group_name if definition == "user-defined" else "Burwood" if local else "Christchurch City"
             rows = [{"area": label, "dwell": "House", "nBedrms": "3",
                      "med": 800 if end.month == 2 else 600, "nLodged": 30 if end.month == 2 else 6}]
-            if local and (self.failure == "no-months" or self.failure == "gap" and end.year == 2024 and end.month == 2):
+            if local and (self.failure == "no-months" or self.failure == "gap" and end.year == 2024 and end.month == 2
+                          or self.failure == "latest-gap" and end.year == 2025 and end.month == 2):
                 rows = []
             payload = {"periodCovered": f"{end}/{last}", "areaDefinition": definition.upper().replace("-", ""),
                        "items": rows}
@@ -136,16 +137,18 @@ class RentReviewTests(unittest.TestCase):
             return json.loads((output / "summary.json").read_text())
 
     def test_monthly_coverage_selects_each_market_measure(self):
-        for self.failure, expected in [(None, "weighted_monthly_medians"), ("gap", "weighted_monthly_medians"),
+        for self.failure, expected in [(None, "weighted_monthly_medians"), ("gap", "arithmetic_mean"), ("latest-gap", "arithmetic_mean"),
                                        ("no-months", "arithmetic_mean")]:
             with self.subTest(coverage=self.failure):
-                local, city = self.report_summary()["markets"]
+                summary = self.report_summary()
+                local, city = summary["markets"]
+                self.assertAlmostEqual(summary["recommended_change_pct"], (local["chart_change_pct"] + city["chart_change_pct"]) / 2)
                 self.assertEqual(local["chart_measure"], expected)
                 self.assertEqual(city["chart_measure"], "weighted_monthly_medians")
                 self.assertAlmostEqual(city["points"][0]["weighted_monthly_medians"], (800*30 + 600*66)/96)
                 if self.failure == "gap":
                     self.assertIsNone(local["points"][0]["weighted_monthly_medians"])
-                    self.assertIsNone(local["chart_change_pct"])
+                    self.assertAlmostEqual(local["chart_change_pct"], 8)
                     self.assertIsNotNone(local["points"][1]["weighted_monthly_medians"])
                 if self.failure == "no-months":
                     self.assertAlmostEqual(local["chart_change_pct"], 8)

@@ -194,8 +194,8 @@ def render(summary: dict, out: Path) -> Path:
                  fontsize=9.5, color=ink)
     fig.text(.075, .094, "Reading the comparison", fontsize=10.5, weight="bold", color=ink)
     fig.text(.075, .080, "Multiply each monthly median by its published bond count; sum the products and divide by the sum of the counts.\n"
-             "Weights use rounded lodgements. A gap means the window lacks one or more monthly inputs.\n"
-             "If no window is complete for a market, its line uses the annual mean and its table includes the annual median.",
+             "Weights use rounded lodgements. Every weighted point requires 12 published monthly inputs.\n"
+             "If any window is incomplete, that market uses annual means throughout and its table includes the annual median.",
              va="top", fontsize=9, color=muted, linespacing=1.55)
     fig.text(.075, .030, f"Source: MBIE / Tenancy Services Market Rent API | Retrieved {summary['retrieved_date']}", fontsize=8.5,
              color=muted, url="https://portal.api.business.govt.nz/api/market-rent")
@@ -445,7 +445,7 @@ def main(argv=None) -> Path | None:
             if all(m["median"] is not None and m["lodged_bonds"] for m in window):
                 point["weighted_monthly_medians"] = (math.fsum(m["median"] * m["lodged_bonds"] for m in window)
                                                      / sum(m["lodged_bonds"] for m in window))
-        measure = ("weighted_monthly_medians" if any(p["weighted_monthly_medians"] is not None for p in points)
+        measure = ("weighted_monthly_medians" if all(p["weighted_monthly_medians"] is not None for p in points)
                    else "arithmetic_mean")
         first, last = points[0][measure], points[-1][measure]
         markets.append({"label": label, "definition": definition, "codes": market_codes, "points": points,
@@ -463,6 +463,7 @@ def main(argv=None) -> Path | None:
                "geography_note": f"Local: SA2 2019 {codes}. Christchurch City: TA 2019 060. Provisional bond data.",
                "retrieved_at": now.isoformat(), "retrieved_date": now.strftime("%d %B %Y"),
                "method": "Rolling bond-weighted average of monthly medians; per-market annual mean fallback.",
+               "recommended_change_pct": sum(m["chart_change_pct"] for m in markets) / 2,
                "requests": evidence, "markets": markets}
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     with (out / "rolling_comparison.csv").open("w", newline="", encoding="utf-8") as stream:
@@ -473,6 +474,7 @@ def main(argv=None) -> Path | None:
             for point in market["points"]:
                 writer.writerow([market["label"], *(point[k] for k in fields), market["chart_measure"]])
     print(render(summary, out))
+    print(f"50/50 recommended change: {summary['recommended_change_pct']:+.2f}%")
     return out
 
 
