@@ -90,8 +90,13 @@ class RentReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as project:
             with patch.object(self, "response", unavailable):
                 out = self.run_report(project)
+            self.assertTrue((out / "rent_review.pdf").is_file())
             self.assertEqual(json.loads((out / "summary.json").read_text())["markets"][0]["chart_measure"], "arithmetic_mean")
+            previous = {p: p.read_bytes() for p in out.iterdir() if p.is_file()}
             with patch.object(self, "response", wraps=original) as network:
+                with patch.object(rent_review, "render", side_effect=OSError("render failed")), self.assertRaises(OSError):
+                    self.run_report(project)
+                self.assertEqual(previous, {p: p.read_bytes() for p in out.iterdir() if p.is_file()})
                 self.run_report(project)
                 self.assertEqual(network.call_count, 1)
             self.assertEqual(json.loads((out / "summary.json").read_text())["markets"][0]["chart_measure"], "weighted_monthly_medians")

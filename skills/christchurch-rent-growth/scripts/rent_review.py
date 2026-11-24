@@ -341,13 +341,7 @@ def render(summary: dict, out: Path) -> Path:
     fig.text(.075, .016, summary["geography_note"], fontsize=8, color=muted)
     pdf = out / "rent_review.pdf"
     fig.savefig(out / "rent_review.png", dpi=160)
-    with tempfile.NamedTemporaryFile(dir=out, suffix=".pdf", delete=False) as tmp:
-        staged_pdf = Path(tmp.name)
-    try:
-        fig.savefig(staged_pdf)
-        os.replace(staged_pdf, pdf)
-    finally:
-        staged_pdf.unlink(missing_ok=True)
+    fig.savefig(pdf)
     plt.close(fig)
     return pdf
 
@@ -571,28 +565,33 @@ def main(argv=None) -> Path | None:
                "method": "Rolling bond-weighted average of monthly medians; report-wide annual mean fallback.",
                "recommended_change_pct": sum(m["chart_change_pct"] for m in markets) / 2,
                "requests": evidence, "markets": markets}
-    (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    with (out / "rolling_comparison.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.writer(stream)
-        fields = ["window_start", "window_end", "arithmetic_mean", "median", "lodged_bonds", "weighted_monthly_medians"]
-        writer.writerow(["market", *fields, "chart_measure"])
-        for market in markets:
-            for point in market["points"]:
-                writer.writerow([market["label"], *(point.get(k) for k in fields), market["chart_measure"]])
-    with (out / "monthly_inputs.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.writer(stream)
-        writer.writerow(["market", "month", "published_median", "published_lodgements", "estimated_median",
-                         "estimated_weight", "request_error"])
-        for market in markets:
-            for m in market["monthly_inputs"]:
-                est = m.get("estimate", {})
-                writer.writerow([market["label"], m["month"], m["median"], m["lodged_bonds"],
-                                 est.get("median"), est.get("lodged_bonds"), m.get("request_error")])
+    with tempfile.TemporaryDirectory(dir=out) as folder:
+        stage = Path(folder)
+        render(summary, stage)
+        (stage / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        with (stage / "rolling_comparison.csv").open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.writer(stream)
+            fields = ["window_start", "window_end", "arithmetic_mean", "median", "lodged_bonds", "weighted_monthly_medians"]
+            writer.writerow(["market", *fields, "chart_measure"])
+            for market in markets:
+                for point in market["points"]:
+                    writer.writerow([market["label"], *(point.get(k) for k in fields), market["chart_measure"]])
+        with (stage / "monthly_inputs.csv").open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["market", "month", "published_median", "published_lodgements", "estimated_median",
+                             "estimated_weight", "request_error"])
+            for market in markets:
+                for m in market["monthly_inputs"]:
+                    est = m.get("estimate", {})
+                    writer.writerow([market["label"], m["month"], m["median"], m["lodged_bonds"],
+                                     est.get("median"), est.get("lodged_bonds"), m.get("request_error")])
+        for name in ("monthly_inputs.csv", "rolling_comparison.csv", "summary.json", "rent_review.png", "rent_review.pdf"):
+            os.replace(stage / name, out / name)
     pending = [f"{market['label']} {row['month']}" for market in markets for row in market["monthly_inputs"]
                if "request_error" in row]
     if pending:
         retry_months.write_text("\n".join(pending) + "\n", encoding="utf-8")
-    print(render(summary, out))
+    print(out / "rent_review.pdf")
     if not pending:
         retry_months.unlink(missing_ok=True)
     print(f"50/50 recommended change: {summary['recommended_change_pct']:+.2f}%")
