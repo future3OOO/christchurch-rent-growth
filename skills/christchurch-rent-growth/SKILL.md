@@ -29,7 +29,7 @@ For a latest-available request, if the direct annual aggregate is unpublished fo
 
 ## Offer a broader comparison
 
-When either market lacks a monthly median or weight, or either local annual endpoint has fewer than 20 reported bonds, deliver the matched report and its recommendation. Name the affected market and missing months or small counts. An unpublished row does not establish zero lodgements.
+When either market still lacks a usable weighted window after interpolation, or either local annual endpoint has fewer than 20 reported bonds, deliver the matched report and its recommendation. Name the affected market and missing months or small counts. An unpublished row does not establish zero lodgements.
 
 In the same turn, use the native question form to offer a supplementary comparison unless the user has already selected one. Tailor the options to the current filters and omit duplicates:
 
@@ -65,7 +65,9 @@ The website market-rent tool uses NZAD suburb regions. Before treating a website
 
 This is the statistical Market Rent API, not the transactional Tenancy Bond API. Do not substitute sandbox, CSV, invented values or stale periods on failure.
 
-The runner looks up codes locally and queries both markets sequentially for annual windows and individual calendar months using the selected bedroom and dwelling filters. A multi-area comparison uses the direct area=ALL result when all requested areas are listed. If the breakdown omits an area, request and validate a named aggregate for the same codes. The validated result feeds the standard PDF. Reject missing, duplicate, suppressed, wrong-period or wrong-geography aggregates.
+The runner queries sequentially. Each Christchurch City response contains all published dwelling and bedroom combinations for that period. It selects the requested row locally. Validated API responses are stored by full query in a shared SQLite cache (default `~/.cache/christchurch-rent-growth`, override with `MBIE_RENT_CACHE_DIR`). It checks the Tenancy Services publication notice once per run. The two most recent published months refresh on a changed release; older periods are retained as historical snapshots after their final refresh. If the notice cannot be read, recent periods refresh daily. Clear the cache for a full historical revision. Report evidence includes the original retrieval timestamps and response hashes.
+
+After an interrupted run or an annual-mean PDF caused by a temporary monthly request error, rerun the same command in the same project directory to recover the missing responses and regenerate the report. Successful cached requests are reused. A temporary monthly request failure is retried and recorded separately from an unpublished row. If the monthly chart still cannot be built, use the shared annual fallback. If a required annual query fails, report its exact period and resume; offer broader categories if a required aggregate is unpublished.
 
 ## Run
 
@@ -77,14 +79,15 @@ Use Python 3.10 or newer. Offline lookup uses SQLite. Reports also require Matpl
 
 Replace all example inputs with the actual selection. Dates use YYYY-MM. Use `--no-include-adjoining` only for an explicitly requested narrower comparison. The same runner and PDF template cover both scopes. Bedrooms accepts 1, 2, 3, 4, 5, 5+ or explicit ALL. Dwelling types: House, Flat, Apartment, BoardingHouse, Room, ALL. The API returns distinct 5 and 5+ rows: do not merge or reinterpret them without confirming their meaning.
 
-Outputs: `<project>/outputs/<address>_<dwelling>_<bedrooms>_<start>_to_<end>_sa2-<scope-id>/`, containing rent_review.pdf, rent_review.png, rolling_comparison.csv, summary.json and source/ raw JSON. Summary evidence includes request URLs, file paths and SHA-256 values. Different area sets have separate output folders. Repeat a completed scope in a fresh project directory to preserve its evidence. Retrieval date is not a dataset release date.
+Outputs: `<project>/outputs/<address>_<dwelling>_<bedrooms>_<start>_to_<end>_sa2-<scope-id>/`, containing rent_review.pdf, rent_review.png, rolling_comparison.csv, monthly_inputs.csv, summary.json and source/ raw JSON. Summary evidence includes request URLs, file paths and SHA-256 values. Different area sets have separate output folders. Repeat a completed scope in a fresh project directory to preserve its evidence. Retrieval date is not a dataset release date.
 
 ## Calculation contract
 
 - For each market and rolling year, multiply each calendar month's median weekly rent by its published bond lodgements, sum those products and divide by the sum of the 12 counts. Use the market-wide monthly aggregate and rounded MBIE counts. Each distinct month is requested once per market apart from retries.
-- When all chart windows in both markets are complete, chart the weighted measure. The endpoint table shows the weighted measure and annual arithmetic mean.
+- Before fallback, estimate missing monthly inputs between published observations in the requested series. An isolated month takes the midpoint; two consecutive missing months take equal linear steps between their published neighbours. Preserve any published field. A window permits at most two estimated months. Keep estimated weights fractional. Never interpolate HTTP failures, extrapolate beyond published neighbours, or count an estimate as a published bond. Disclose estimates and their effect on the recommendation.
+- When all chart windows in both markets are usable, chart the weighted measure. The endpoint table shows the weighted measure and annual arithmetic mean.
 - If either market has an incomplete weighted window, use the direct annual arithmetic mean for both lines across the entire span. Show annual mean and annual median for both markets in the table.
-- Calculate growth from the selected measure at the fixed baseline and endpoint. An unavailable endpoint leaves the change unavailable. Transport errors or invalid responses stop the run after applicable retries.
+- Calculate growth from the selected measure at the fixed baseline and endpoint. An unavailable endpoint leaves the change unavailable. The direct annual endpoints always supply the table and bond bars. Intermediate annual periods are fetched only for an annual-mean chart.
 - **Bonds:** direct annual nLodged, not nCurr (active bonds at endpoint). Counts are randomly rounded; totals can differ from summed cells. Label bars "Year to [month/year]" and give the full annual windows. These are not cumulative lodgements since the rent increase or counts of tenants receiving increases.
 
 Do not reconstruct annual or grouped means from rounded counts when a direct aggregate exists. Excluding one-bedroom labels from an otherwise all-bedroom analysis is a separate approximate analysis: the API's bedroom filter does not necessarily recompute the ALL subtotal. Disclose reconstruction and aggregate inconsistencies; never silently use these estimates in the standard report. Unknown-bedroom records are not known two-plus-bedroom properties.
@@ -95,7 +98,7 @@ Tenancy Services acknowledges inaccurate bedroom counts among some one-bedroom r
 
 ## Standard PDF
 
-Run the bundled report command for the requested span, inspect its PDF, and link it in the final answer with the findings. This includes requests to calculate rent change for a property. Give figures alone only if explicitly requested. The runner retries temporary server or connection failures on the affected request. If it stops, report the failed window and error. Never rebuild the report by passing a shortened series to the renderer.
+Run the bundled report command for the requested span, inspect its PDF, and link it in the final answer with the findings. This includes requests to calculate rent change for a property. Give figures alone only if explicitly requested. The runner retries temporary server or connection failures on the affected request. If it stops, report the failed window and error. Deliver the PDF generated by the bundled renderer. If recovery is needed, resume the runner; a hand-built summary, substitute PDF or shortened chart does not fulfil the report request.
 
 ## Recommendation and landlord message
 

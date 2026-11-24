@@ -20,6 +20,89 @@ class RentReviewTests(unittest.TestCase):
     group_labels = ["Burwood", "Otakaro-Avon River Corridor", "Travis Wetlands", "Prestons", "Shirley East"]
     group_name = "Burwood and adjoining areas"
 
+    def setUp(self):
+        sleeper = patch.object(rent_review.time, "sleep")
+        sleeper.start()
+        self.addCleanup(sleeper.stop)
+
+    def test_interpolated_weights_two_gap_limit_and_transport_errors(self):
+        def series(gaps):
+            return [{"month": str(i), "median": None if i in gaps else 400 + i * 5,
+                     "lodged_bonds": None if i in gaps else 3 + (i // 2) * 3} for i in range(13)]
+        monthly = series({3, 7})
+        points = rent_review.weighted_windows(monthly, 2)
+        self.assertEqual(monthly[3]["estimate"], {"median": 415, "lodged_bonds": 7.5})
+        self.assertIsNone(monthly[3]["lodged_bonds"])
+        self.assertEqual(points[0]["estimated_months"], ["3", "7"])
+        self.assertIsNotNone(points[0]["weighted_monthly_medians"])
+        pair = series({5, 6})
+        rent_review.weighted_windows(pair, 2)
+        self.assertEqual([pair[i]["estimate"]["median"] for i in (5, 6)], [425, 430])
+        three = rent_review.weighted_windows(series({0, 3, 7}), 2)
+        self.assertIsNone(three[0]["weighted_monthly_medians"])
+        self.assertIsNotNone(three[1]["weighted_monthly_medians"])
+        self.assertIsNone(rent_review.weighted_windows(series({2, 4, 6}), 2)[0]["weighted_monthly_medians"])
+        bad = series({5})
+        bad[5]["request_error"] = "HTTP 500"
+        self.assertIsNone(rent_review.weighted_windows(bad, 2)[0]["weighted_monthly_medians"])
+        self.assertNotIn("estimate", bad[5])
+
+    def test_retry_resumes_and_city_cache_serves_other_categories(self):
+        self.failure = None
+        original = self.response
+        with tempfile.TemporaryDirectory() as temp:
+            calls = []
+            def interrupted(req, timeout):
+                calls.append(req.full_url)
+                if "period-ending=2025-02" in req.full_url and "num-months=12" in req.full_url:
+                    raise HTTPError(req.full_url, 503, "unavailable", None, None)
+                return original(req, timeout)
+            with patch.object(self, "response", interrupted), self.assertRaisesRegex(SystemExit, "2025-02.*503"):
+                self.run_report(temp)
+            with patch.object(self, "response", wraps=original) as resumed:
+                self.run_report(temp)
+            retried = [call.args[0].full_url for call in resumed.call_args_list]
+            self.assertFalse(set(retried).intersection(url for url in calls if "num-months=1&" in url))
+            self.assertTrue(any("num-months=12" in url for url in retried))
+            from contextlib import closing
+            import sqlite3
+            with closing(sqlite3.connect(Path(temp)/"cache"/"responses.sqlite")) as db, patch.object(
+                    rent_review, "publication", return_value=(rent_review.date(2025,2,1),"release-1")):
+                data = rent_review.MarketData("test-key", Path(temp), [], db)
+                city = {"definition":"TA2019","area_labels":["Christchurch City"],"codes":"060"}
+                with patch("urllib.request.urlopen") as network:
+                    missing = data.period(city, rent_review.date(2025,2,1), 1, "Flat", "2")
+                    self.assertIsNone(missing["median"])
+                    network.assert_not_called()
+                data.release = "release-2"
+                with patch("urllib.request.urlopen", wraps=original) as network:
+                    data.period(city, rent_review.date(2025,2,1), 1, "House", "3")
+                    data.period(city, rent_review.date(2024,3,1), 1, "House", "3")
+                    self.assertEqual(network.call_count, 1)
+
+    def test_resume_fallback_pdf_after_monthly_service_error(self):
+        self.failure = None
+        original = self.response
+        def unavailable(req, timeout):
+            if all(token in req.full_url for token in ("TA2019", "num-months=1&", "period-ending=2025-01")):
+                raise HTTPError(req.full_url, 503, "unavailable", None, None)
+            return original(req, timeout)
+        with tempfile.TemporaryDirectory() as project:
+            with patch.object(self, "response", unavailable):
+                out = self.run_report(project)
+            self.assertTrue((out / "rent_review.pdf").is_file())
+            self.assertEqual(json.loads((out / "summary.json").read_text())["markets"][0]["chart_measure"], "arithmetic_mean")
+            previous = {p: p.read_bytes() for p in out.iterdir() if p.is_file()}
+            with patch.object(self, "response", wraps=original) as network:
+                with patch.object(rent_review, "render", side_effect=OSError("render failed")), self.assertRaises(OSError):
+                    self.run_report(project)
+                self.assertEqual(previous, {p: p.read_bytes() for p in out.iterdir() if p.is_file()})
+                self.run_report(project)
+                self.assertEqual(network.call_count, 1)
+            self.assertEqual(json.loads((out / "summary.json").read_text())["markets"][0]["chart_measure"], "weighted_monthly_medians")
+            with self.assertRaisesRegex(SystemExit, "report already exists"):
+                self.run_report(project)
+
     def test_report_requires_an_explicit_dwelling_type(self):
         with tempfile.TemporaryDirectory() as project, patch("urllib.request.urlopen") as network:
             with self.assertRaises(SystemExit) as error:
@@ -66,8 +149,12 @@ class RentReviewTests(unittest.TestCase):
         url = request.full_url
         query = parse_qs(urlparse(url).query)
         self.assertTrue(urlparse(url).path.endswith("/statistics"))
-        self.assertEqual(query["dwelling-type"], ["House"])
-        self.assertEqual(query["num-bedrooms"], ["3"])
+        if query["area-definition"] == ["TA2019"]:
+            self.assertNotIn("dwelling-type", query)
+            self.assertNotIn("num-bedrooms", query)
+        else:
+            self.assertEqual(query["dwelling-type"], ["House"])
+            self.assertEqual(query["num-bedrooms"], ["3"])
         if query["num-months"] == ["1"]:
             end = rent_review.date.fromisoformat(query["period-ending"][0] + "-01")
             last = rent_review.shift(end, 1) - rent_review.timedelta(days=1)
@@ -127,7 +214,8 @@ class RentReviewTests(unittest.TestCase):
         args = ["--project-dir", project, "--address", "280 Beach Road", "--suburb", "Burwood",
                 "--bedrooms", "3", "--dwelling-type", "House",
                 "--start-month", "2025-01", "--end-month", "2025-02", *options]
-        with patch.dict(rent_review.os.environ, {"MBIE_MARKET_RENT_API_KEY": "test-key"}), \
+        with patch.dict(rent_review.os.environ, {"MBIE_MARKET_RENT_API_KEY": "test-key", "MBIE_RENT_CACHE_DIR": str(Path(project)/"cache")}), \
+             patch.object(rent_review, "publication", return_value=(rent_review.date(2025, 2, 1), "release-1")), \
              patch("urllib.request.urlopen", self.response):
             return rent_review.main(args)
 
@@ -226,7 +314,8 @@ class RentReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as project, patch.object(self, "response", unavailable):
             with self.assertRaisesRegex(SystemExit, "2025-01.*503"):
                 self.run_report(project)
-            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(calls), 2 * (26 + 1))
+            self.assertEqual(calls[::2], calls[1::2])
             self.assertFalse(list(Path(project).rglob("*.pdf")))
 
     def test_invalid_or_unavailable_aggregate_cannot_produce_a_report(self):
