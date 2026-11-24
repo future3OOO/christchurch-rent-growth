@@ -1,4 +1,4 @@
-"""Bedroom-specific suburb versus Christchurch rent review from direct annual API aggregates."""
+"""Compare rolling rents for a Christchurch neighbourhood and the city using MBIE bond data."""
 import argparse
 import csv
 import hashlib
@@ -9,6 +9,7 @@ import os
 import re
 import sqlite3
 import sys
+import tempfile
 import time
 import unicodedata
 import urllib.request
@@ -46,34 +47,161 @@ def iso(d: date) -> str:
     return "%04d-%02d" % (d.year, d.month)
 
 
-def api_get(base: str, path: str, key: str, source: Path, evidence: list, **params) -> dict:
-    url = base + path + ("?" + urlencode(params) if params else "")
-    request = urllib.request.Request(url, headers={"Ocp-Apim-Subscription-Key": key,
-                                                  "Accept": "application/json"})
-    for attempt in range(2):
-        try:
-            with urllib.request.urlopen(request, timeout=130) as response:
-                raw = response.read()
-            break
-        except (OSError, IncompleteRead) as exc:
-            reason = exc.reason if isinstance(exc, URLError) else exc
-            transient = (isinstance(exc, HTTPError) and exc.code in (500, 502, 503, 504)
-                         or isinstance(reason, (TimeoutError, ConnectionError, IncompleteRead)))
-            if attempt or not transient:
-                fail(f"Market Rent API request failed for {params['area-definition']} "
-                     f"window ending {params['period-ending']}: {exc}")
-            time.sleep(1)
-    saved = source / ("%03d.json" % (len(evidence) + 1))
-    saved.write_bytes(raw)
-    evidence.append({"url": url, "response_file": str(saved),
-                     "sha256": hashlib.sha256(raw).hexdigest()})
+RELEASE_PAGE = "https://www.tenancy.govt.nz/about-tenancy-services/data-and-statistics/rental-bond-data/"
+
+def publication():
+    """Identify the monthly release; a dated token limits reuse if the release notice is unavailable."""
+    today = date.today()
     try:
-        payload = json.loads(raw)
-    except (ValueError, UnicodeDecodeError):
-        fail("Market Rent API returned invalid JSON")
-    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
-        fail("Market Rent API response must contain an items list")
-    return payload
+        with urllib.request.urlopen(RELEASE_PAGE, timeout=8) as response:
+            page = response.read().decode("utf-8")
+        match = re.search(r"Rental bond data,[^<]+ to (\w+) (\d{4})</h2>.*?Last updated (\d{1,2} \w+ \d{4})", page, re.S)
+        if match and match[1] in MONTHS:
+            return date(int(match[2]), MONTHS.index(match[1]) + 1, 1), match[3]
+    except (OSError, IncompleteRead, UnicodeDecodeError):
+        pass
+    return shift(today, -2), today.isoformat()
+
+
+class TemporaryRequestFailure(SystemExit):
+    """Retryable API request still unavailable after the same-request retry."""
+
+
+class MarketData:
+    """Cache validated MBIE responses by exact query, shared across report directories."""
+    def __init__(self, key, source, evidence, db):
+        self.key, self.source, self.evidence, self.db = key, source, evidence, db
+        self.latest, self.release = publication()
+        db.execute("CREATE TABLE IF NOT EXISTS responses (url TEXT PRIMARY KEY, stamp TEXT, fetched TEXT, "
+                   "digest TEXT, body BLOB)")
+
+    def read(self, params, definition, labels, month, dwelling, bedrooms):
+        url = BASE + "statistics?" + urlencode(sorted(params.items()))
+        stamp = self.release if month >= shift(self.latest, -1) else "historical"
+        alternate = url
+        mapping = params.get("user-defined-area-mappings", "")
+        if " (" in mapping:
+            compact = {**params, "user-defined-area-mappings": mapping.replace(" (", "(")}
+            alternate = BASE + "statistics?" + urlencode(sorted(compact.items()))
+        cached = self.db.execute("SELECT url,fetched,digest,body FROM responses WHERE url IN (?,?) AND stamp=?",
+                                 (url, alternate, stamp)).fetchone()
+        if cached and hashlib.sha256(cached[3]).hexdigest() == cached[2]:
+            url, fetched, digest, raw = cached
+        else:
+            cached = None
+            request = urllib.request.Request(url, headers={"Ocp-Apim-Subscription-Key": self.key, "Accept": "application/json"})
+            for attempt in range(2):
+                try:
+                    with urllib.request.urlopen(request, timeout=130) as response:
+                        raw = response.read()
+                    break
+                except (OSError, IncompleteRead) as exc:
+                    reason = exc.reason if isinstance(exc, URLError) else exc
+                    transient = (isinstance(exc, HTTPError) and exc.code in (429, 500, 502, 503, 504)
+                                 or isinstance(reason, (TimeoutError, ConnectionError, IncompleteRead)))
+                    message = f"VALIDATION FAILED: Market Rent API request failed for {definition} window ending {iso(month)}: {exc}"
+                    if not transient:
+                        fail(message)
+                    if attempt:
+                        raise TemporaryRequestFailure(f"{message}. Rerun the same command to resume.") from exc
+                    time.sleep(1)
+            fetched = datetime.now().astimezone().isoformat()
+            digest = hashlib.sha256(raw).hexdigest()
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            fail("Market Rent API returned invalid JSON")
+        if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+            fail("Market Rent API response must contain an items list")
+        partial = False
+        try:
+            if params["num-months"] == 12:
+                result = annual_row(payload, definition, labels, month, dwelling, bedrooms)
+            else:
+                row = period_row(payload, definition, labels, month, dwelling, bedrooms, 1) or {}
+                median, count = row.get("med"), row.get("nLodged")
+                if median is not None and (type(median) not in (int, float) or not math.isfinite(median) or median <= 0):
+                    fail(f"invalid median for {iso(month)}")
+                if count is not None and (type(count) is not int or count < 0):
+                    fail(f"invalid bond count for {iso(month)}")
+                result = {"month": iso(month), "median": median, "lodged_bonds": count}
+        except IncompleteAreaBreakdown:
+            partial = True
+        if not cached:
+            with self.db:
+                self.db.execute("INSERT OR REPLACE INTO responses VALUES(?,?,?,?,?)", (url, stamp, fetched, digest, raw))
+        saved = self.source / (digest + ".json")
+        if not saved.exists() or hashlib.sha256(saved.read_bytes()).hexdigest() != digest:
+            with tempfile.NamedTemporaryFile(dir=self.source, delete=False) as tmp:
+                tmp.write(raw)
+            os.replace(tmp.name, saved)
+        evidence = {"url": url, "response_file": str(saved), "sha256": digest, "retrieved_at": fetched, "cached": bool(cached)}
+        self.evidence.append(evidence)
+        if partial:
+            raise IncompleteAreaBreakdown()
+        result["request"] = evidence
+        return result
+
+    def period(self, market, month, months, dwelling, bedrooms):
+        definition = market["definition"]
+        labels = market["area_labels"]
+        params = {"period-ending": iso(month), "num-months": months, "include-aggregates": "true"}
+        if definition != "TA2019":
+            if dwelling != "ALL":
+                params["dwelling-type"] = dwelling
+            if bedrooms != "ALL":
+                params["num-bedrooms"] = bedrooms
+        if len(labels) == 1 or (months == 12 and not market.get("use_named_group")):
+            try:
+                return self.read({**params, "area-definition": definition, "area-codes": market["codes"]},
+                                 definition, labels, month, dwelling, bedrooms)
+            except IncompleteAreaBreakdown:
+                market["use_named_group"] = True
+        group = market["group"]
+        params["area-definition"] = "user-defined"
+        for space in (" ", ""):
+            params["user-defined-area-mappings"] = f"{group}{space}({market['codes']})"
+            try:
+                return self.read(params, "USERDEFINED", [group], month, dwelling, bedrooms)
+            except SystemExit as exc:
+                error = exc.__context__
+                if not space or not isinstance(error, HTTPError) or error.code != 500:
+                    raise
+
+
+def weighted_windows(monthly, count):
+    """Use only published neighbours for estimates, with a two-month budget per rolling year."""
+    usable = [m["median"] is not None and bool(m["lodged_bonds"]) for m in monthly]
+    for i, m in enumerate(monthly):
+        if (m["median"] is not None and m["lodged_bonds"] is not None) or "request_error" in m:
+            continue
+        left, right = i - 1, i + 1
+        while left >= 0 and i - left <= 2 and not usable[left]:
+            left -= 1
+        while right < len(monthly) and right - i <= 2 and not usable[right]:
+            right += 1
+        if (left < 0 or right >= len(monthly) or right - left > 3
+                or any("request_error" in item for item in monthly[left + 1:right])):
+            continue
+        fraction = (i - left) / (right - left)
+        estimate = {}
+        for field in ("median", "lodged_bonds"):
+            if m[field] is None:
+                lo, hi = monthly[left][field], monthly[right][field]
+                estimate[field] = lo + (hi - lo) * fraction
+        m["estimate"] = estimate
+    points = []
+    for i in range(count):
+        window = monthly[i:i + 12]
+        rents = [m.get("estimate", {}).get("median", m["median"]) for m in window]
+        weights = [m.get("estimate", {}).get("lodged_bonds", m["lodged_bonds"]) for m in window]
+        estimated = [m["month"] for m in window if "estimate" in m]
+        value = None
+        if len(estimated) <= 2 and None not in rents and None not in weights and sum(weights) > 0:
+            value = math.fsum(r * w for r, w in zip(rents, weights)) / sum(weights)
+        points.append({"window_start": window[0]["month"], "window_end": window[-1]["month"],
+                       "weighted_monthly_medians": value, "estimated_months": estimated if value is not None else []})
+    return points
 
 def percent_change(value: float, baseline: float) -> float:
     return (value / baseline - 1) * 100
@@ -115,6 +243,8 @@ def render(summary: dict, out: Path) -> Path:
         fig.text(left, .838, f"${values[-1]:.2f}/week" if values[-1] is not None else "Incomplete window",
                  fontsize=21, color=ink, weight="bold")
         description = "Bond-weighted monthly medians" if weighted else "Annual mean (fallback)"
+        if weighted and points[-1].get("estimated_months"):
+            description += " (includes estimates)"
         fig.text(left, .815, description, fontsize=10.5, color=color)
         growth = f"{rates[-1]:+.1f}% from {summary['start_label']}" if rates[-1] is not None else "Change unavailable"
         fig.text(left, .799, growth, fontsize=9, color=muted)
@@ -193,16 +323,31 @@ def render(summary: dict, out: Path) -> Path:
         fig.text(.075, .111, f"Small local sample: {before} and {after} reported bonds. A few lettings can materially change the average.",
                  fontsize=9.5, color=ink)
     fig.text(.075, .094, "Reading the comparison", fontsize=10.5, weight="bold", color=ink)
-    fig.text(.075, .080, "Multiply each monthly median by its published bond count; sum the products and divide by the sum of the counts.\n"
-             "Weights use rounded lodgements. Every weighted point requires 12 published monthly inputs.\n"
-             "If either market lacks a complete window, both use annual means throughout and the table shows both annual medians.",
-             va="top", fontsize=9, color=muted, linespacing=1.55)
+    estimates = [(m["label"], row) for m in summary["markets"] for row in m["monthly_inputs"]
+                 if m["chart_measure"] == "weighted_monthly_medians" and row.get("estimate")]
+    detail = "If a window remains incomplete, both lines use the annual mean."
+    if len(estimates) == 1:
+        label, row = estimates[0]
+        values = {**row, **row["estimate"]}
+        detail = (f"{label}, {row['month']}: median ${values['median']:,.2f}, weight {values['lodged_bonds']:g} "
+                  "(includes interpolation).")
+    elif estimates:
+        detail = f"Estimates used in {len(estimates)} market-months. See monthly_inputs.csv for months and weights."
+    fig.text(.075, .080, "Multiply each monthly median by its bond weight and divide the sum of products by the total weight.\n"
+             "Published counts are rounded. Up to two missing months per year may use interpolation between published months.\n"
+             + detail, va="top", fontsize=9, color=muted, linespacing=1.55)
     fig.text(.075, .030, f"Source: MBIE / Tenancy Services Market Rent API | Retrieved {summary['retrieved_date']}", fontsize=8.5,
              color=muted, url="https://portal.api.business.govt.nz/api/market-rent")
     fig.text(.075, .016, summary["geography_note"], fontsize=8, color=muted)
     pdf = out / "rent_review.pdf"
-    fig.savefig(pdf)
     fig.savefig(out / "rent_review.png", dpi=160)
+    with tempfile.NamedTemporaryFile(dir=out, suffix=".pdf", delete=False) as tmp:
+        staged_pdf = Path(tmp.name)
+    try:
+        fig.savefig(staged_pdf)
+        os.replace(staged_pdf, pdf)
+    finally:
+        staged_pdf.unlink(missing_ok=True)
     plt.close(fig)
     return pdf
 
@@ -251,21 +396,6 @@ def annual_row(payload: dict, definition: str, labels: list, end: date, dwelling
         fail("non-positive annual rent")
     return {"window_start": iso(shift(end, -11)), "window_end": iso(end), "arithmetic_mean": row["mean"],
             "median": row["med"], "lodged_bonds": row["nLodged"]}
-
-
-def named_group_statistics(params: dict, name: str, key: str, source: Path, evidence: list) -> dict:
-    query = {k: v for k, v in params.items() if k not in {"area-definition", "area-codes"}}
-    query["area-definition"] = "user-defined"
-    codes = params["area-codes"]
-    query["user-defined-area-mappings"] = f"{name} ({codes})"
-    try:
-        return api_get(BASE, "statistics", key, source, evidence, **query)
-    except SystemExit as exc:
-        error = exc.__context__
-        if not isinstance(error, HTTPError) or error.code != 500:
-            raise
-    query["user-defined-area-mappings"] = f"{name}({codes})"
-    return api_get(BASE, "statistics", key, source, evidence, **query)
 
 
 def lookup_key(value: str) -> str:
@@ -394,64 +524,35 @@ def main(argv=None) -> Path | None:
     evidence = []
     markets = []
     count = (end.year - start.year) * 12 + end.month - start.month + 1
-    for label, definition, market_codes, market_labels in [(local_label, "SAU2019", codes, labels),
-                                                           ("Christchurch City", "TA2019", "060", ["Christchurch City"])]:
-        points = []
-        use_named_group = False
-        named_group = re.sub(r" \(Christchurch City\)", "", label, flags=re.IGNORECASE)
-        named_group = re.sub(r"[(),]", "", named_group).replace(" + ", " and ")
-        for offset in range(count):
-            month = shift(start, offset)
-            params = {
-                "period-ending": iso(month), "num-months": 12, "area-definition": definition,
-                "area-codes": market_codes, "include-aggregates": "true"}
-            if args.dwelling_type != "ALL":
-                params["dwelling-type"] = args.dwelling_type
-            if args.bedrooms != "ALL":
-                params["num-bedrooms"] = args.bedrooms
-            if not use_named_group:
-                payload = api_get(BASE, "statistics", key, source, evidence, **params)
+    cache = Path(os.environ.get("MBIE_RENT_CACHE_DIR", Path.home() / ".cache" / "christchurch-rent-growth"))
+    cache.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(cache / "responses.sqlite", timeout=30)) as db:
+        data = MarketData(key, source, evidence, db)
+        for label, definition, market_codes, market_labels in [(local_label, "SAU2019", codes, labels),
+                                                               ("Christchurch City", "TA2019", "060", ["Christchurch City"])]:
+            group = re.sub(r" \(Christchurch City\)", "", label, flags=re.IGNORECASE)
+            market = {"label": label, "definition": definition, "codes": market_codes, "area_labels": market_labels,
+                      "group": re.sub(r"[(),]", "", group).replace(" + ", " and ")}
+            monthly = []
+            for offset in range(-11, count):
+                month = shift(start, offset)
                 try:
-                    point = annual_row(payload, definition, market_labels, month, args.dwelling_type, args.bedrooms)
-                except IncompleteAreaBreakdown:
-                    use_named_group = True
-            if use_named_group:
-                payload = named_group_statistics(params, named_group, key, source, evidence)
-                point = annual_row(payload, "USERDEFINED", [named_group], month, args.dwelling_type, args.bedrooms)
-            point["request"] = evidence[-1]
-            points.append(point)
-            print(label, point["window_end"], f"annual mean ${point['arithmetic_mean']:.2f}", flush=True)
-        monthly = []
-        for offset in range(-11, count):
-            month = shift(start, offset)
-            query = {**params, "period-ending": iso(month), "num-months": 1}
-            if len(market_labels) > 1:
-                payload = named_group_statistics(query, named_group, key, source, evidence)
-                row = period_row(payload, "USERDEFINED", [named_group], month, args.dwelling_type, args.bedrooms, 1)
-            else:
-                payload = api_get(BASE, "statistics", key, source, evidence, **query)
-                row = period_row(payload, definition, market_labels, month, args.dwelling_type, args.bedrooms, 1)
-            median = row.get("med") if row else None
-            bonds = row.get("nLodged") if row else None
-            if median is not None and (type(median) not in (int, float) or not math.isfinite(median) or median <= 0):
-                fail(f"invalid monthly median for {label} {iso(month)}")
-            if bonds is not None and (type(bonds) is not int or bonds < 0):
-                fail(f"invalid monthly bond count for {label} {iso(month)}")
-            monthly.append({"month": iso(month), "median": median, "lodged_bonds": bonds, "request": evidence[-1]})
-
-        for offset, point in enumerate(points):
-            window = monthly[offset:offset + 12]
-            point["weighted_monthly_medians"] = None
-            if all(m["median"] is not None and m["lodged_bonds"] for m in window):
-                point["weighted_monthly_medians"] = (math.fsum(m["median"] * m["lodged_bonds"] for m in window)
-                                                     / sum(m["lodged_bonds"] for m in window))
-        markets.append({"label": label, "definition": definition, "codes": market_codes, "points": points,
-                        "monthly_inputs": monthly,
-                        "arithmetic_change_pct": percent_change(points[-1]["arithmetic_mean"], points[0]["arithmetic_mean"])})
-
-    complete = all(point["weighted_monthly_medians"] is not None
-                   for market in markets for point in market["points"])
-    measure = "weighted_monthly_medians" if complete else "arithmetic_mean"
+                    entry = data.period(market, month, 1, args.dwelling_type, args.bedrooms)
+                except TemporaryRequestFailure as exc:
+                    entry = {"month": iso(month), "median": None, "lodged_bonds": None, "request_error": str(exc)}
+                    print(exc, file=sys.stderr)
+                monthly.append(entry)
+            market["monthly_inputs"] = monthly
+            market["points"] = weighted_windows(monthly, count)
+            markets.append(market)
+        complete = all(p["weighted_monthly_medians"] is not None for m in markets for p in m["points"])
+        measure = "weighted_monthly_medians" if complete else "arithmetic_mean"
+        for market in markets:
+            points = market["points"]
+            for i, point in enumerate(points):
+                if not complete or i in (0, count - 1):
+                    point.update(data.period(market, shift(start, i), 12, args.dwelling_type, args.bedrooms))
+            market["arithmetic_change_pct"] = percent_change(points[-1]["arithmetic_mean"], points[0]["arithmetic_mean"])
     for market in markets:
         points = market["points"]
         market["chart_measure"] = measure
@@ -476,7 +577,16 @@ def main(argv=None) -> Path | None:
         writer.writerow(["market", *fields, "chart_measure"])
         for market in markets:
             for point in market["points"]:
-                writer.writerow([market["label"], *(point[k] for k in fields), market["chart_measure"]])
+                writer.writerow([market["label"], *(point.get(k) for k in fields), market["chart_measure"]])
+    with (out / "monthly_inputs.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["market", "month", "published_median", "published_lodgements", "estimated_median",
+                         "estimated_weight", "request_error"])
+        for market in markets:
+            for m in market["monthly_inputs"]:
+                est = m.get("estimate", {})
+                writer.writerow([market["label"], m["month"], m["median"], m["lodged_bonds"],
+                                 est.get("median"), est.get("lodged_bonds"), m.get("request_error")])
     print(render(summary, out))
     print(f"50/50 recommended change: {summary['recommended_change_pct']:+.2f}%")
     return out
