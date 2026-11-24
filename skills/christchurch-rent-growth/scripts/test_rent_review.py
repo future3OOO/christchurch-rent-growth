@@ -57,7 +57,7 @@ class RentReviewTests(unittest.TestCase):
                 if "period-ending=2025-02" in req.full_url and "num-months=12" in req.full_url:
                     raise HTTPError(req.full_url, 503, "unavailable", None, None)
                 return original(req, timeout)
-            with patch.object(self, "response", interrupted), self.assertRaises(SystemExit):
+            with patch.object(self, "response", interrupted), self.assertRaisesRegex(SystemExit, "2025-02.*503"):
                 self.run_report(temp)
             with patch.object(self, "response", wraps=original) as resumed:
                 self.run_report(temp)
@@ -79,6 +79,24 @@ class RentReviewTests(unittest.TestCase):
                     data.period(city, rent_review.date(2025,2,1), 1, "House", "3")
                     data.period(city, rent_review.date(2024,3,1), 1, "House", "3")
                     self.assertEqual(network.call_count, 1)
+
+    def test_resume_fallback_pdf_after_monthly_service_error(self):
+        self.failure = None
+        original = self.response
+        def unavailable(req, timeout):
+            if all(token in req.full_url for token in ("TA2019", "num-months=1&", "period-ending=2025-01")):
+                raise HTTPError(req.full_url, 503, "unavailable", None, None)
+            return original(req, timeout)
+        with tempfile.TemporaryDirectory() as project:
+            with patch.object(self, "response", unavailable):
+                out = self.run_report(project)
+            self.assertEqual(json.loads((out / "summary.json").read_text())["markets"][0]["chart_measure"], "arithmetic_mean")
+            with patch.object(self, "response", wraps=original) as network:
+                self.run_report(project)
+                self.assertEqual(network.call_count, 1)
+            self.assertEqual(json.loads((out / "summary.json").read_text())["markets"][0]["chart_measure"], "weighted_monthly_medians")
+            with self.assertRaisesRegex(SystemExit, "report already exists"):
+                self.run_report(project)
 
     def test_report_requires_an_explicit_dwelling_type(self):
         with tempfile.TemporaryDirectory() as project, patch("urllib.request.urlopen") as network:
@@ -291,7 +309,8 @@ class RentReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as project, patch.object(self, "response", unavailable):
             with self.assertRaisesRegex(SystemExit, "2025-01.*503"):
                 self.run_report(project)
-            self.assertGreater(len(calls), 2)
+            self.assertEqual(len(calls), 2 * (26 + 1))
+            self.assertEqual(calls[::2], calls[1::2])
             self.assertFalse(list(Path(project).rglob("*.pdf")))
 
     def test_invalid_or_unavailable_aggregate_cannot_produce_a_report(self):

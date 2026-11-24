@@ -517,7 +517,8 @@ def main(argv=None) -> Path | None:
     suffix = hashlib.sha256(scope.encode("ascii")).hexdigest()[:12]
     report_name = f"{slug}_{args.dwelling_type}_{args.bedrooms}_{args.start_month}_to_{args.end_month}"
     out = Path(args.project_dir).resolve() / "outputs" / f"{report_name}_sa2-{suffix}"
-    if (out / "rent_review.pdf").exists():
+    retry_months = out / ".retry-monthly-requests"
+    if (out / "rent_review.pdf").exists() and not retry_months.exists():
         fail("report already exists; choose a fresh project directory to preserve its source evidence")
     source = out / "source"
     source.mkdir(parents=True, exist_ok=True)
@@ -587,7 +588,13 @@ def main(argv=None) -> Path | None:
                 est = m.get("estimate", {})
                 writer.writerow([market["label"], m["month"], m["median"], m["lodged_bonds"],
                                  est.get("median"), est.get("lodged_bonds"), m.get("request_error")])
+    pending = [f"{market['label']} {row['month']}" for market in markets for row in market["monthly_inputs"]
+               if "request_error" in row]
+    if pending:
+        retry_months.write_text("\n".join(pending) + "\n", encoding="utf-8")
     print(render(summary, out))
+    if not pending:
+        retry_months.unlink(missing_ok=True)
     print(f"50/50 recommended change: {summary['recommended_change_pct']:+.2f}%")
     return out
 
